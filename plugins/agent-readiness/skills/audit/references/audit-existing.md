@@ -30,7 +30,7 @@ When AI files already exist, the job is mostly **optimization**: keep what's rig
 - A root `CLAUDE.md` next to an `AGENTS.md` it doesn't import: Claude never sees `AGENTS.md`.
 - Skills used as rules (body is just a pointer to a rules file).
 - Instruction files that aren't committed: they only help the person who wrote them.
-- README commands that no longer exist (e.g. a documented `make` target with no recipe). Agents copy them; fix the README or the Makefile.
+- README commands that no longer exist (e.g. a documented `make` target with no recipe). Agents copy them. Keep them out of instruction files, and recommend the README/Makefile fix in the report (outside the plugin's scope).
 
 ## Report format
 

@@ -49,6 +49,10 @@ Adapted from Factory's Agent Readiness Model. A level is reached only when all o
 | 4 | Optimized | Level 3 + C2, C9, S5 ≥ 1 |
 | 5 | Autonomous | Level 4 + an active feedback loop (`docs/agent-readiness/lessons.md` updated in the last 30 days) and a scheduled re-audit (`scan.py --fail-on high` in CI, or a scheduled routine running the audit) |
 
+## Roadmap to the next levels
+
+Levels are gates, so a decent score can still sit at a low level. Always add a roadmap: for the current level + 1 and + 2, list each failing gate with its current score, the concrete fix (file, command or setting), effort (S/M/L), and who can do it. *Plugin* fixes are the ones inside its scope (instruction files, `.claude/settings.json`, `docs/agent-readiness/`); the audit can apply them. Everything else is *team*: code, build files, CI, README, `.gitignore`, credentials, owners, repo settings. Give the team a concrete recommendation (the exact target, step or line), but never apply it. Then add the remaining non-gate points by gain ÷ effort. Show the projected score and level after the plugin fixes, after the team's quick wins, and after everything. If plugin fixes alone can't lift the level, say so plainly.
+
 ## Top fixes
 
 Rank failing criteria by impact ÷ effort. Weight safety (C7, C8) and accuracy (C3) above everything else: a wrong or unsafe setup is worse than a missing one.

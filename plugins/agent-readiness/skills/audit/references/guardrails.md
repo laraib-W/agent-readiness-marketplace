@@ -62,3 +62,5 @@ A `PostToolUse` hook on `Edit|Write` that formats the edited file, only when the
 Verify the exact hook input format and command against https://code.claude.com/docs/en/hooks before writing it.
 
 Explain each rule in one line in the report so the team can review it.
+
+`.gitignore` is outside the plugin's scope. If secret or data files aren't ignored, deny reading them here and **recommend** the `.gitignore` lines in the report.

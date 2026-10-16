@@ -30,6 +30,8 @@ FILES = {
     ".claude/skills/pointer/SKILL.md": "---\nname: pointer\ndescription: x\n---\nRead and follow `.ai/rules/x.md`.\n",
     ".claude/rules/csv.md": '---\npaths: "src/**/*.ts, docs/*.md"\n---\nx\n',
     ".cursor/rules/x.mdc": "Read and follow @.ai/rules/gone.md\n",
+    "svc/a/AGENTS.md": "# a\n",                       # root CLAUDE.md exists, nothing beside it -> ignored
+    "svc/b/AGENTS.md": "# b\n", "svc/b/CLAUDE.md": "@AGENTS.md\n",
     ".claude/settings.json": '{"permissions": {"deny": ["Read(./.env)"]}}',
     ".claude/rules/braces.md": '---\npaths: ["src/**/*.{ts,tsx}"]\n---\nx\n',
     ".claude/rules/deep.md": '---\npaths: ["packages/**/Deep.tsx"]\n---\nx\n',
@@ -81,6 +83,9 @@ def test_scan():
     assert {s["command"] for s in r["checks"]["stale_commands"] if s["file"] == "README.md"} == {"make quality"}
     # AGENTS.md is ignored by Claude when a root CLAUDE.md doesn't import it
     assert any(f["where"] == "AGENTS.md" and "ignores this AGENTS.md" in f["finding"] for f in r["findings"])
+    nested_loads = {a["path"]: a["loads"] for a in r["agents_md"]}
+    assert nested_loads["svc/a/AGENTS.md"].startswith("never") and nested_loads["svc/b/AGENTS.md"].startswith("on-demand (imported")
+    assert any(f.get("where") == "svc/a/AGENTS.md" for f in r["findings"])
     # suffix-matched and negated refs aren't stale; dangling @ref in another tool's file is
     stale_refs = {s["ref"] for s in r["checks"]["stale_paths"]}
     assert "@.ai/rules/gone.md" in stale_refs and not stale_refs & {"apps/users/api.py", "api.py", "services"}, stale_refs
@@ -92,7 +97,8 @@ def test_scan():
     assert any(f["finding"].startswith("`web/`") and "no area instructions" in f["finding"] for f in r["findings"])
     assert not any(f["finding"].startswith("`old/`") and "no area instructions" in f["finding"] for f in r["findings"])
     untracked = next(f["finding"] for f in r["findings"] if "not committed" in f["finding"])
-    assert ".claude/rules/braces.md" in untracked and "CLAUDE.md," not in untracked
+    listed = untracked.split(": ", 1)[1].split(" (+")[0].split(", ")
+    assert ".claude/rules/braces.md" in listed and "CLAUDE.md" not in listed, listed
 
 
 def test_units():
@@ -106,6 +112,11 @@ def test_units():
         (root / "apps/alpha/views.py").write_text('import langgraph\nimport pydantic\nfrom openai import OpenAI\n"""\nimport there is prose\n"""\n')
         (root / "apps/alpha/tests.py").write_text("import freezegun\n")  # test-only: not a signal
         (root / "apps/beta/package.json").write_text("{}")
+        # alpha is a hub: three siblings import it, absolutely and relatively
+        (root / "apps/gamma/views.py").write_text("from apps.alpha.models import A\n")
+        (root / "apps/delta/views.py").write_text("import apps.alpha.views\n")
+        (root / "apps/eps/views.py").write_text("from ..alpha import models\n")
+        (root / "apps/eps/tests.py").write_text("from apps.beta.models import B\n")  # tests don't count
         run = lambda *a, **kw: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a],
                                               cwd=root, check=True, capture_output=True, **kw)
         run("init", "-q")
@@ -115,13 +126,22 @@ def test_units():
             for app in ["alpha", "beta"]:
                 (root / "apps" / app / "models.py").write_text(f"# {i}\n")
             run("commit", "-qam", f"change {i}")
-        units = {u["unit"]: u for u in scan.scan(root)["units"]}
+        result = scan.scan(root)
+        units = {u["unit"]: u for u in result["units"]}
+        nested = {u["unit"]: u for u in scan.scan(root, "nested")["units"]}
+        smap = scan.structure_map(result)
 
     alpha, beta, gamma = units["apps/alpha"], units["apps/beta"], units["apps/gamma"]
     assert alpha["own_deps"] == ["langgraph", "openai", "pydantic"], alpha["own_deps"]
     assert alpha["strength"] == "strong" and alpha["suggested_home"] == "path-scoped rule"
-    assert beta["strength"] == "strong" and beta["suggested_home"] == "nested CLAUDE.md/AGENTS.md"
+    assert beta["strength"] == "strong" and beta["suggested_home"] == "nested CLAUDE.md"
     assert gamma["strength"] is None
+    assert alpha["used_by"] == ["apps/delta", "apps/eps", "apps/gamma"], alpha["used_by"]
+    assert any(r.startswith("imported by 3 of 4") for r in alpha["reasons"])
+    assert "apps/beta" not in units["apps/eps"]["uses"]
+    assert nested["apps/alpha"]["suggested_home"] == "nested CLAUDE.md"
+    assert result["structure"]["hubs"][0]["unit"] == "apps/alpha"
+    assert "| `alpha` |" in smap and "| `eps` |" in smap
 
 
 if __name__ == "__main__":

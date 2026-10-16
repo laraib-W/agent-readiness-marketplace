@@ -57,6 +57,7 @@ Outputs go to `docs/agent-readiness/` in the target repo (`report.md`, `lessons.
 ## Safety
 
 - Discovery and audit are read-only; every change is shown as a diff and needs approval.
+- It only edits agent-instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/`, other tools' rule files) and `docs/agent-readiness/`. Code, build, CI, README and `.gitignore` fixes are recommendations in the report. It never commits or pushes.
 - Never reads `.env*` (except examples), keys, credentials or data dumps; the scan reports them by name only.
 - No network calls; nothing leaves your machine except what Claude Code itself sends to the model.
 - To see where you start sessions, the scan lists folder names (not contents) under `~/.claude/projects`.

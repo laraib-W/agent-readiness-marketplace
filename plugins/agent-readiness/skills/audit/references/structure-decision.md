@@ -18,10 +18,12 @@ Every active part in the scan's `parts` list needs area instructions (a scoped r
 ## 1b. Units inside a part (apps, features, packages)
 The scan's **Units** table lists subfolders that stand out from their siblings (own libraries, own tooling, sessions started inside, much larger, or fixed much more often). For each **strong** candidate:
 1. Have discovery sample 2–3 of its files and one sibling's. Write down only what differs: the distinct libraries and how they're used (client setup, where to mock them), its own folders, its own commands, its own data or failure modes. If nothing differs beyond size, write nothing and say so in the report.
-2. Home, as the scan suggests:
-   - **path-scoped rule** → `.claude/rules/<part>/<unit>.md` with `paths: ["<unit>/**"]`. Mirror the collection in the rules folder (`.claude/rules/backend/jobs.md`), so one app's rules sit together. 3–10 lines; don't repeat the collection-wide rule.
-   - **nested `CLAUDE.md`/`AGENTS.md`** (own tooling, or people start sessions there) → a file inside the unit with its commands and layout. Use `AGENTS.md` if the team uses other tools too.
-   - If the team keeps shared rules elsewhere (e.g. `.ai/rules/`), put the file there and symlink it, as in §6.
+2. Home, as the scan suggests (`--layout auto|nested|rules`; the user can pass `layout=nested` or `layout=rules` to the audit):
+   - **nested `CLAUDE.md`**, when only Claude is used and the unit has its own tooling, a CODEOWNERS line, sessions started inside, or siblings that already have one → a file inside the unit.
+   - **nested `AGENTS.md` + `CLAUDE.md` containing `@AGENTS.md`**, when other AI tools are in the repo. Cursor and Codex read the nested `AGENTS.md` themselves. Claude needs the `CLAUDE.md`: once any `CLAUDE.md` exists above, Claude ignores `AGENTS.md` files unless imported. Two files per unit, one source of truth, visible to whoever opens the app.
+   - **path-scoped rule** → `.claude/rules/<part>/<unit>.md` with `paths: ["<unit>/**"]`, mirroring the collection (`.claude/rules/backend/jobs.md`). Best for Claude-only repos without a reason to nest.
+   - Either way: 5–15 lines, only what differs from the collection-wide rule, nothing repeated from it.
+   - A nested file loads when Claude touches any file in the unit; a rule loads for files matching its globs. For a whole unit they behave the same.
 3. **Weak** candidates (one signal): no file. List them in the report as hotspots for `/agent-readiness:learn`.
 4. Cap a first pass at about five unit files; more come from the feedback loop.
 
@@ -48,8 +50,11 @@ Repo-root `.claude/` for project config. Generic, cross-repo helpers belong in a
 - Cursor/Copilot/Windsurf rules exist → don't delete. Note overlaps and propose moving shared content to `AGENTS.md` if the team uses several tools; ask the user.
 - Only Claude is used → plain `CLAUDE.md`.
 
-## 7. Code graphs / indexing / extra MCP servers
-Default **no**. Claude Code finds code by searching on demand, which keeps context small. An indexing or graph MCP server adds tool definitions to every session. Propose one only with evidence (very large repo where discovery was slow in step 2), and tell the user to compare `/context` before and after. A Mermaid diagram in `docs/architecture.md` (referenced by path) is a cheap alternative for humans.
+## 7. Structure maps, code graphs, indexing
+Start from the scan's **Structure** line and its recommendations; they come from code-file count, unit count, cross-unit import links, hub units and existing graph tools.
+- **Structure map** (recommended when there are many units or links): write `scan.py --map` to `docs/agent-readiness/structure.md` and point to it by path from the root file ("who depends on whom: `docs/agent-readiness/structure.md`"). It costs nothing until read. It's generated, so re-run it instead of editing it.
+- **Hub units** (imported by half their siblings or more) get the strongest per-unit instructions: what they own, what dependents rely on, and that changes need the dependents' tests.
+- **Code graph / index MCP server** (recommended only for very large or tightly coupled repos): it answers impact questions faster than grep but adds tool definitions to every session. If the repo already has one (e.g. `.code-review-graph/`) wired only to another editor, offer to add it to `.mcp.json`; otherwise suggest one. Either way, tell the user to compare `/context` before and after and keep it only if it's used. Default for repos below the thresholds: **no**.
 
 ## 8. Guardrails
 Always propose `.claude/settings.json` per `guardrails.md`, tailored to the secret files, migration tools and deploy scripts actually found.
