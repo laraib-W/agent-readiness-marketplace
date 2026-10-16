@@ -1,0 +1,18 @@
+{
+  "name": "agent-readiness",
+  "version": "0.1.0",
+  "description": "Make any repo agent-ready for Claude Code: scan, score, and propose repo-specific, token-efficient CLAUDE.md, rules, skills, agents and guardrails. Works on new repos and repos that already have AI files.",
+  "author": {
+    "name": "Laraib Waheed"
+  },
+  "homepage": "https://github.com/laraib-W/agent-readiness-marketplace",
+  "repository": "https://github.com/laraib-W/agent-readiness-marketplace",
+  "license": "MIT",
+  "keywords": [
+    "claude-md",
+    "agent-readiness",
+    "context",
+    "onboarding",
+    "audit"
+  ]
+}

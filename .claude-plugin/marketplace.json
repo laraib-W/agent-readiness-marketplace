@@ -1,0 +1,14 @@
+{
+  "name": "agent-readiness-tools",
+  "description": "Tools for making repositories agent-ready",
+  "owner": {
+    "name": "Laraib Waheed"
+  },
+  "plugins": [
+    {
+      "name": "agent-readiness",
+      "source": "./plugins/agent-readiness",
+      "description": "Scan, score and optimize any repo's Claude Code setup with repo-specific, token-efficient instructions"
+    }
+  ]
+}
