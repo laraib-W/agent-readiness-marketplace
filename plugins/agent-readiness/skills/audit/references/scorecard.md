@@ -7,11 +7,11 @@ Score each criterion **0 (missing) / 1 (partial) / 2 (good)** with evidence (fil
 | # | Criterion | 2 = good |
 |---|---|---|
 | C1 | Agent instructions | Root `CLAUDE.md` (or `AGENTS.md` + import) exists, accurate, within budget |
-| C2 | Context efficiency | Always-loaded ≤ ~150 lines; area-specific rules path-scoped; no duplicates; no large imports |
+| C2 | Context efficiency | Always-loaded ≤ ~150 lines; area-specific rules path-scoped; no duplicates; no large imports; every active part and strong unit has scoped instructions or a recorded reason not to |
 | C3 | Instruction accuracy | No stale commands/paths; nothing contradicts the code (scan + auditor) |
 | C4 | Setup | Documented, copy-pasteable; `.env.example` lists every required variable |
 | C5 | Run | Each app part starts with one documented command |
-| C6 | Tests | Run locally without external services; single test runnable by path |
+| C6 | Tests | Run locally without external services; single test runnable by path. **Run them** (a sample per part): a suite that mostly fails on a clean checkout scores 0 for that part |
 | C7 | Secrets safety | Secret files gitignored; `settings.json` denies reading them |
 | C8 | Dangerous actions | Migrations, deploys, data deletion, destructive git require approval |
 | C9 | Fast feedback | Lint/format (and type-check where used) runnable per file/part; hook runs them after edits |
@@ -22,7 +22,7 @@ Score each criterion **0 (missing) / 1 (partial) / 2 (good)** with evidence (fil
 |---|---|---|
 | S1 | Lint / format configured | Config files present and used in CI |
 | S2 | Type checking | Configured where the language supports it |
-| S3 | CI | Runs lint + tests; same commands work locally |
+| S3 | CI | Runs lint + tests for **every** part; same commands work locally. A part whose tests CI never runs scores at most 1 |
 | S4 | Local data | Seed data / factories; no production data needed |
 | S5 | Risk-zone tests | Auth, permissions, core flows have tests |
 | S6 | Docs | README and architecture docs match the code |
@@ -42,6 +42,7 @@ Adapted from Factory's Agent Readiness Model. A level is reached only when all o
 
 | Level | Name | Gates |
 |---|---|---|
+| 0 | Below level 1 | Any level-1 gate fails. Report it as "below level 1", naming the failing gate |
 | 1 | Functional | C5, C6 ≥ 1, S1 ≥ 1 |
 | 2 | Documented | Level 1 + C1, C4, S6 ≥ 1 |
 | 3 | Standardized | Level 2 + C3, C7, C8, S3 |

@@ -27,6 +27,10 @@ When AI files already exist, the job is mostly **optimization**: keep what's rig
 - Skill/agent descriptions that are long, vague, or overlap so Claude picks the wrong one.
 - Agents with more tools than they need (reviewers should be read-only).
 - Settings that allow broad Bash (`Bash(*)`) or don't deny secret files.
+- A root `CLAUDE.md` next to an `AGENTS.md` it doesn't import: Claude never sees `AGENTS.md`.
+- Skills used as rules (body is just a pointer to a rules file).
+- Instruction files that aren't committed: they only help the person who wrote them.
+- README commands that no longer exist (e.g. a documented `make` target with no recipe). Agents copy them; fix the README or the Makefile.
 
 ## Report format
 

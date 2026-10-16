@@ -12,7 +12,9 @@ Its output is specific to each repo: every proposed instruction must cite eviden
 | `/agent-readiness:learn` | Skill (user-triggered) | Turns a correction into the narrowest rule (hook, path-scoped rule, nested or root `CLAUDE.md`) and prunes stale rules |
 | `repo-architect` | Subagent (Read/Glob/Grep only) | Maps the app: stack, modules, data model, API, auth, frontend, commands, risk zones |
 | `instruction-auditor` | Subagent (read-only by instruction; Bash for `git log`) | Checks existing instruction files against the code: stale, wrong, duplicated, misplaced |
-| `scan.py` | Script (stdlib Python) | Deterministic facts: instruction files and when they load, always-loaded size, broken imports/globs, stale commands/paths, duplicates, secret-file protection |
+| `scan.py` | Script (stdlib Python) | Deterministic facts: instruction files and when they load, always-loaded size, broken imports/globs, stale commands/paths, duplicates, secret-file protection, and which subfolders (apps, features, packages) stand out from their siblings enough to need their own rule or `CLAUDE.md` |
+
+It complements the built-in `/doctor prompt-audit`, which reviews instruction wording. This plugin adds the deterministic scan, scoring, file layout and guardrails.
 
 Both skills are user-triggered (`disable-model-invocation: true`), so they add **no per-turn context** when you're not using them.
 
@@ -57,6 +59,7 @@ Outputs go to `docs/agent-readiness/` in the target repo (`report.md`, `lessons.
 - Discovery and audit are read-only; every change is shown as a diff and needs approval.
 - Never reads `.env*` (except examples), keys, credentials or data dumps; the scan reports them by name only.
 - No network calls; nothing leaves your machine except what Claude Code itself sends to the model.
+- To see where you start sessions, the scan lists folder names (not contents) under `~/.claude/projects`.
 
 ## Scoring
 

@@ -21,7 +21,7 @@ Arguments: `$ARGUMENTS`
 2. **Context is a budget.** Read `${CLAUDE_SKILL_DIR}/references/context-principles.md` before proposing any file. Prefer the narrowest home: path-scoped rule > nested `CLAUDE.md` > root `CLAUDE.md`. Removing or scoping an existing line is as valuable as adding one.
 3. **No secrets, no real data.** Never open `.env*` (except examples), keys, credentials, dumps, or fixtures with personal data. Never connect to non-local databases or services.
 4. **Nothing changes without approval.** Steps 1–6 change nothing except writing the report. Show diffs for existing files before editing them.
-5. **Don't guess commands.** Only commands found in scripts/Makefile/CI/README, or verified by running a safe read-only command, may appear in instruction files. Otherwise mark them `UNVERIFIED`.
+5. **Don't guess commands.** Only commands found in scripts/Makefile/CI/README, or verified by running a safe read-only command, may appear in instruction files. Otherwise mark them `UNVERIFIED`. A README is a source only where the scan didn't flag it. Run the single-test and lint commands once on one small file before writing them down. If they fail because of the local environment (e.g. a missing package), record the fix rather than dropping the command.
 
 ## Flow
 
@@ -35,16 +35,16 @@ Keep the output; it gives the repo **state** (`greenfield`, `other-tools-only`, 
 If the argument is `scan`, show it and stop.
 
 ### 2. Discover the app
-Delegate to the **repo-architect** subagent. Give it the scan output and the focus path. If good architecture docs already exist (README, `docs/`), tell it to verify and fill gaps rather than re-document everything. It returns a compact architecture summary with evidence.
+Delegate to the **repo-architect** subagent. Give it the scan output (including the strong rows of the Units table) and the focus path. If good architecture docs already exist (README, `docs/`), tell it to verify and fill gaps rather than re-document everything. It returns a compact architecture summary with evidence.
 
 ### 3. Audit existing instructions (skip if state is `greenfield`)
-Delegate to the **instruction-auditor** subagent with the scan output, the architecture summary, and the path `${CLAUDE_SKILL_DIR}/references/audit-existing.md` for its classification rules. It checks every existing instruction file (Claude and other tools) against the code: stale, wrong, generic, duplicated, conflicting, or misplaced content. Read `${CLAUDE_SKILL_DIR}/references/audit-existing.md` to interpret its result.
+Delegate to the **instruction-auditor** subagent with the scan output, the architecture summary, and the path `${CLAUDE_SKILL_DIR}/references/audit-existing.md` for its classification rules. It checks every existing instruction file (Claude and other tools) against the code: stale, wrong, generic, duplicated, conflicting, or misplaced content. Read `${CLAUDE_SKILL_DIR}/references/audit-existing.md` to interpret its result. If the user also runs the built-in `/doctor prompt-audit`, it covers wording quality; don't repeat its findings.
 
 ### 4. Score
 Read `${CLAUDE_SKILL_DIR}/references/scorecard.md`. Score every criterion 0/1/2 using scan + discovery + audit evidence, compute the maturity level, and list the top 5 fixes by impact ÷ effort.
 
 ### 5. Decide the structure
-Read `${CLAUDE_SKILL_DIR}/references/structure-decision.md` and answer each decision for this repo with evidence. The shape must follow the repo: a single small app may need only a short root `CLAUDE.md` and a `settings.json`; a monorepo may need per-part rules. Don't add skills, agents or commands without a concrete, repo-specific reason.
+Read `${CLAUDE_SKILL_DIR}/references/structure-decision.md` and answer each decision for this repo with evidence. The shape must follow the repo: a single small app may need only a short root `CLAUDE.md` and a `settings.json`; a monorepo may need per-part rules, and strong units inside a part may need their own (§1b). Don't add skills, agents or commands without a concrete, repo-specific reason.
 
 ### 6. Write the report
 Write `docs/agent-readiness/report.md` (create the folder) containing:
@@ -65,4 +65,4 @@ Ask which rows of the change plan to apply. For each approved row:
 - Never overwrite user-written content silently. Keep their wording where it is still correct.
 
 ### 8. Verify
-Re-run the scan. Report before → after for: findings by severity, always-loaded lines and tokens, score. Tell the user how to confirm in a live session (`/context`, and touching a file in each scoped area to see the `Loaded` line). Suggest `/agent-readiness:learn` for the ongoing feedback loop, and a scheduled re-audit: `scan.py --fail-on high` in CI, or a scheduled Claude Code routine (`/schedule`) running `/agent-readiness:audit report`.
+Re-run the scan. Report before → after for: findings by severity, always-loaded lines and tokens, score. If the scan says instruction files aren't committed, tell the user to commit them; until then nobody else benefits. Tell the user how to confirm in a live session (`/context`, and touching a file in each scoped area to see the `Loaded` line). Suggest `/agent-readiness:learn` for the ongoing feedback loop, and a scheduled re-audit: `scan.py --fail-on high` in CI, or a scheduled Claude Code routine (`/schedule`) running `/agent-readiness:audit report`.

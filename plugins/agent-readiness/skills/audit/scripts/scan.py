@@ -5,6 +5,8 @@ Collects facts about a repository's AI-agent setup without using an LLM, so the
 agent spends tokens on judgment, not on counting. Standard library only.
 
 Never reads secret files: env/key/credential files are reported by NAME only.
+To count where Claude sessions start, it lists folder names (not contents) under
+~/.claude/projects on this machine.
 
 Usage:
     python3 scan.py [REPO_ROOT] [--format json|md] [--fail-on high|medium|low]
@@ -12,12 +14,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import builtins
 import fnmatch
+import keyword
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 IGNORE_DIRS = {
@@ -57,7 +62,7 @@ MANIFESTS = {
 }
 CI_GLOBS = [".github/workflows/*.yml", ".github/workflows/*.yaml", ".gitlab-ci.yml",
             "bitbucket-pipelines.yml", ".circleci/config.yml", "Jenkinsfile", "azure-pipelines.yml"]
-SECRET_PATTERNS = [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*",
+SECRET_PATTERNS = [".env", ".env.*", "*.env", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*",
                    "credentials*.json", "service-account*.json", "secrets.*", "*.sqlite3", "*.dump"]
 SECRET_SAFE = {".env.example", ".env.sample", ".env.template", ".env.dist"}
 # Source files named like secrets (e.g. Django's secrets.py) are code, not secrets.
@@ -76,6 +81,27 @@ HYGIENE = {
 }
 SEV_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
+# Unit detection: a folder whose children share a shape (e.g. every Django app has models.py,
+# every feature has components/) is a collection; each child is a unit that may need its own rule.
+CODE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".go", ".rb", ".java", ".kt", ".php", ".rs",
+                 ".vue", ".svelte", ".cs", ".swift", ".scala", ".ex", ".exs"}
+TOOLING = {"package.json", "pyproject.toml", "setup.cfg", "pytest.ini", "tox.ini", "go.mod", "Cargo.toml",
+           "tsconfig.json", ".eslintrc", ".eslintrc.js", ".eslintrc.json", "jest.config.js", "Makefile",
+           "Dockerfile", "requirements.txt", "Gemfile", "composer.json", "pom.xml", "build.gradle"}
+TEST_PART = re.compile(r"(^|/)(tests?|__tests__|spec|e2e|fixtures?)(/|$)|(^|/)(test_[^/]*|[^/]*_test\.\w+|[^/]*\.(test|spec)\.\w+|conftest\.py|tests?\.py|factor(y|ies)\.py)$")
+NOT_PACKAGES = set(keyword.kwlist) | set(dir(builtins))  # "import from ..." in a docstring isn't an import
+# Whole-line import syntax only, so prose in a docstring ("import there is...") doesn't count.
+PY_IMPORT = re.compile(r"^(?:from\s+([A-Za-z_]\w*)[\w.]*\s+import\s+[(*\w]"
+                       r"|import\s+([A-Za-z_]\w*)[\w.]*(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*\s*(?:#.*)?$)", re.M)
+JS_IMPORT = re.compile(r"""(?:\bfrom\s+|\brequire\(\s*|\bimport\(\s*)['"]((?:@[\w.-]+/)?[\w.-]+)""")
+UNIT_WINDOW_DAYS = 180
+UNIT_MIN_CODE = 5        # ignore collections of tiny units (icon folders, chart variants)
+UNIT_FIX_RATIO = 0.35    # share of recent commits whose subject says "fix"...
+UNIT_FIX_LIFT = 1.5      # ...and this many times the collection's own fix rate (teams word commits differently)
+UNIT_SIZE_RATIO = 3      # x the median sibling size
+UNIT_SESSIONS = 3        # sessions started inside the unit -> nested CLAUDE.md is worth it
+UNIT_TOP = 10
+
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 IMPORT_RE = re.compile(r"(?<![`\w])@([~./\w-][\w./~-]*)")
 BACKTICK_PATH_RE = re.compile(r"`([A-Za-z0-9_.~-][\w./-]*/[\w./-]*|[\w-]+\.(?:md|py|ts|tsx|js|json|toml|yml|yaml|cfg|ini|txt))`")
@@ -83,7 +109,8 @@ NPM_RE = re.compile(r"\b(?:npm run|yarn(?: run)?|pnpm(?: run)?|bun run)\s+([\w:.
 NPM_BUILTINS = {"install", "add", "remove", "test", "start", "build", "dev", "i", "ci", "exec", "dlx", "x",
                 "workspace", "workspaces", "why", "upgrade", "up", "update", "init", "create", "info",
                 "link", "global", "config", "cache", "audit", "outdated", "list", "ls"}
-MAKE_RE = re.compile(r"\bmake\s+([\w.-]+)")
+# Only `make` that starts a command, so prose in a fence ("make a copy") is ignored.
+MAKE_RE = re.compile(r"(?:^|&&|\|\||[;|$])\s*make\s+([\w.-]+)")
 
 
 def rel(p: Path, root: Path) -> str:
@@ -104,10 +131,10 @@ def walk(root: Path):
             yield d / f
 
 
-def git(root: Path, *args: str) -> tuple[int, list[str]]:
+def git(root: Path, *args: str, stdin: str | None = None) -> tuple[int, list[str]]:
     """Run git in root; NUL-separated output. (128, []) if not a repo or git is missing."""
     try:
-        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["git", "-C", str(root), *args], input=stdin, capture_output=True, text=True, timeout=30)
         return r.returncode, [x for x in r.stdout.split("\0") if x]
     except (OSError, subprocess.SubprocessError):
         return 128, []
@@ -207,8 +234,8 @@ def approx_tokens(text: str) -> int:
 
 
 def find_imports(path: Path, root: Path, seen: set, depth: int = 0) -> list[dict]:
-    """Resolve @imports recursively (max depth 5), as Claude Code does."""
-    if depth > 5:
+    """Resolve @imports recursively (max four hops), as Claude Code does."""
+    if depth > 3:
         return []
     out = []
     text = read_text(path)
@@ -239,10 +266,158 @@ def find_imports(path: Path, root: Path, seen: set, depth: int = 0) -> list[dict
 def git_ignored(root: Path, paths: list[str]) -> dict:
     if not paths:
         return {}
-    code, out = git(root, "check-ignore", "--no-index", "-z", *paths)
+    code, out = git(root, "check-ignore", "--no-index", "--stdin", "-z", stdin="\0".join(paths) + "\0")
     if code > 1:
         return {}
     return {p: (p in set(out)) for p in paths}
+
+
+def session_counts(root: Path) -> dict[str, int]:
+    """Claude Code sessions started in root or below, keyed by relative folder ("." = root)."""
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "projects"
+    enc = lambda p: re.sub(r"[^A-Za-z0-9]", "-", str(p))
+    prefix = enc(root)
+    out: dict[str, int] = {}
+    try:
+        dirs = [d for d in base.iterdir() if d.is_dir() and d.name.startswith(prefix)]
+    except OSError:
+        return out
+    for d in dirs:
+        rest = d.name[len(prefix):]
+        if rest and not rest.startswith("-"):
+            continue
+        n = sum(1 for _ in d.glob("*.jsonl"))
+        # Encoding is lossy ("/" and "-" both become "-"), so match against real folders.
+        out[rest.lstrip("-") or "."] = n
+    return out
+
+
+def match_session_dir(encoded: str, folder: str) -> bool:
+    return encoded == re.sub(r"[^A-Za-z0-9]", "-", folder)
+
+
+def find_units(root: Path, files: list[str], rules: list[dict], nested_dirs: set[str],
+               sessions: dict[str, int]) -> list[dict]:
+    """Group units into collections and measure the signals that say a unit needs its own instructions."""
+    files = [f for f in files if not IGNORE_DIRS.intersection(Path(f).parts)]
+    kids: dict[str, dict[str, set]] = {}
+    for f in files:
+        parts = Path(f).parts
+        for i in range(1, min(len(parts) - 1, MAX_DEPTH)):
+            if parts[i].startswith((".", "__")):
+                break
+            kids.setdefault("/".join(parts[:i]), {}).setdefault(parts[i], set()).add(parts[i + 1])
+    code = {}
+    for f in files:
+        if Path(f).suffix in CODE_SUFFIXES:
+            code.setdefault(str(Path(f).parent), []).append(f)
+
+    def code_in(u: str) -> list[str]:
+        return [f for d, fs in code.items() if d == u or d.startswith(u + "/") for f in fs]
+
+    found = {}
+    for parent, ch in kids.items():
+        if len(ch) < 3:
+            continue
+        freq: dict[str, int] = {}
+        for names in ch.values():
+            for n in names:
+                freq[n] = freq.get(n, 0) + 1
+        template = {n for n, c in freq.items() if c >= max(3, len(ch) / 2)}
+        if len(template) < 2:
+            continue
+        sizes = sorted(len(code_in(f"{parent}/{k}")) for k in ch)
+        if sizes[len(sizes) // 2] < UNIT_MIN_CODE:
+            continue
+        found[parent] = (ch, template, sizes[len(sizes) // 2])
+    # Keep the outermost collections (a feature's components/ folder isn't another collection).
+    found = {p: v for p, v in found.items() if not any(p != q and p.startswith(q + "/") for q in found)}
+    if not found:
+        return []
+
+    commits: dict[str, int] = {}
+    fixes: dict[str, int] = {}
+    log = "\0".join(git(root, "log", f"--since={UNIT_WINDOW_DAYS}.days", "-z", "--name-only", "--format=%x01%s")[1])
+    for rec in log.split("\x01")[1:]:
+        subject, _, rest = rec.partition("\n")
+        touched = set()
+        for n in (x.strip("\n") for x in rest.split("\0")):
+            for parent in found:
+                if n.startswith(parent + "/"):
+                    touched.add(parent + "/" + n[len(parent) + 1:].split("/")[0])
+        for u in touched:
+            commits[u] = commits.get(u, 0) + 1
+            if re.search(r"\bfix", subject, re.I):
+                fixes[u] = fixes.get(u, 0) + 1
+
+    local = {Path(f).parts[0] for f in files} | {Path(f).stem for f in files if f.endswith(".py")}
+    stdlib = set(getattr(sys, "stdlib_module_names", ()))
+    units = []
+    for parent, (ch, template, median) in found.items():
+        deps: dict[str, set] = {}
+        for k in ch:
+            d = set()
+            for f in code_in(f"{parent}/{k}"):
+                if TEST_PART.search(f):
+                    continue  # test-only libraries don't make a unit different
+                text = read_text(root / f)
+                if f.endswith(".py"):
+                    names = [a or b for a, b in PY_IMPORT.findall(text)]
+                else:
+                    names = JS_IMPORT.findall(text)
+                d |= {n for n in names if n and not n.startswith(".") and n not in stdlib and n not in local
+                      and n not in NOT_PACKAGES}
+            deps[k] = d
+        usage: dict[str, int] = {}
+        for d in deps.values():
+            for x in d:
+                usage[x] = usage.get(x, 0) + 1
+        cap = max(1, len(ch) // 10)
+        all_c = sum(commits.get(f"{parent}/{k}", 0) for k in ch)
+        base_fix = sum(fixes.get(f"{parent}/{k}", 0) for k in ch) / all_c if all_c else 0
+        fix_bar = max(UNIT_FIX_RATIO, UNIT_FIX_LIFT * base_fix)
+        for k, names in ch.items():
+            u = f"{parent}/{k}"
+            cfiles = code_in(u)
+            own_deps = sorted(x for x in deps[k] if usage[x] <= cap)
+            own_dirs = sorted(n for n in names - template
+                              if (root / u / n).is_dir() and not TEST_PART.search(n) and not n.startswith((".", "__")))
+            tooling = sorted(n for n in names if n in TOOLING)
+            c, fx = commits.get(u, 0), fixes.get(u, 0)
+            sess = sum(n for enc, n in sessions.items() if enc != "." and
+                       (match_session_dir(enc, u) or enc.startswith(re.sub(r"[^A-Za-z0-9]", "-", u) + "-")))
+            specific = [r["path"] for r in rules if r["paths"] and any(u in g for g in r["paths"])]
+            nested = any(d == u or d.startswith(u + "/") for d in nested_dirs)
+            reasons = []
+            if tooling:
+                reasons.append(f"own tooling ({', '.join(tooling)})")
+            if sess >= UNIT_SESSIONS:
+                reasons.append(f"{sess} sessions started inside it")
+            if len(own_deps) >= 2:
+                reasons.append(f"dependencies no sibling uses ({', '.join(own_deps[:5])})")
+            # Several libraries nobody else uses, in code that's being worked on, is a different stack.
+            distinct_stack = len(own_deps) >= 3 and c >= 10
+            if c >= 10 and fx / c >= fix_bar:
+                reasons.append(f"{fx} of {c} commits in {UNIT_WINDOW_DAYS} days are fixes "
+                               f"(siblings: {base_fix:.0%})")
+            if median and len(cfiles) >= UNIT_SIZE_RATIO * median and len(cfiles) >= 30:
+                reasons.append(f"{len(cfiles)} code files, {len(cfiles) // median}x the median sibling")
+            if c == 0:
+                reasons = []  # untouched for the whole window: not worth instructions now
+            home_signal = bool(tooling or sess >= UNIT_SESSIONS)
+            home = "nested CLAUDE.md/AGENTS.md" if home_signal else "path-scoped rule"
+            # One signal is a hotspot to watch (/learn); two independent ones, or a reason to open
+            # sessions there, justify instructions of its own.
+            strength = ("strong" if reasons and (home_signal or distinct_stack or len(reasons) >= 2)
+                        else "weak" if reasons else None)
+            units.append({"collection": parent, "unit": u, "code_files": len(cfiles), "commits": c, "fix_commits": fx,
+                          "own_deps": own_deps, "own_dirs": own_dirs, "tooling": tooling, "sessions": sess,
+                          "covered_by": specific + ([u + "/ (nested file)"] if nested else []),
+                          "reasons": reasons, "strength": strength, "suggested_home": home if reasons else None,
+                          # rank: more independent signals first, then activity
+                          "score": len(reasons) * 1000 + c})
+    units.sort(key=lambda x: -x["score"])
+    return units
 
 
 def norm_line(l: str) -> str:
@@ -252,6 +427,8 @@ def norm_line(l: str) -> str:
 def scan(root: Path) -> dict:
     root = root.resolve()
     relpaths = {rel(f, root): f for f in walk(root)}
+    git_code, tracked = git(root, "ls-files", "-z")
+    tracked = set(tracked)
     # The walk is depth-limited and skips most dot-dirs; git's list isn't. Keep the walk too:
     # it finds gitignored secret files that git won't list.
     for rp in git(root, "ls-files", "-z", "-co", "--exclude-standard")[1]:
@@ -299,13 +476,14 @@ def scan(root: Path) -> dict:
             t = read_text(f)
             fm = frontmatter(t)
             paths = fm.get("paths") or []
-            if isinstance(paths, str):
-                paths = [paths]
+            if isinstance(paths, str):  # Claude Code also accepts a comma-separated string
+                paths = [g.strip() for g in re.split(r",(?![^{]*\})", paths) if g.strip()]
             in_nested = not rp.startswith(".claude/")
             matched = None
             if paths:
                 matched = any(glob_match(p2, g) for g in paths for p2 in relpaths)
             rules.append({"path": rp, "paths": paths,
+                          "external_symlink": f.is_symlink() and not str(f.resolve()).startswith(str(root) + os.sep),
                           "loads": "on-demand (matching files)" if paths or in_nested else "always",
                           "paths_match_any_file": matched,
                           "lines": body_lines(t), "approx_tokens": approx_tokens(t)})
@@ -323,21 +501,57 @@ def scan(root: Path) -> dict:
                             "description_chars": len(desc),
                             "model_invocable": str(fm.get("disable-model-invocation", "false")).lower() != "true",
                             "tools": fm.get("tools") or fm.get("allowed-tools"),
-                            "lines": body_lines(t)})
+                            "lines": body_lines(t),
+                            # A body that only says "read X.md" is a rule in disguise.
+                            "pointer_only": kind == "skill" and body_lines(t) <= 3
+                            and bool(re.search(r"[`@][\w./-]+\.md", t.split("---", 2)[-1]))})
         return out
 
     skills = component("skill", ".claude/skills/*/SKILL.md")
     agents = component("agent", ".claude/agents/*.md")
     commands = component("command", ".claude/commands/*.md")
 
+    # ---- AGENTS.md: read natively only when no CLAUDE.md exists at the root ----
+    has_root_claude = any(c["loads"] == "always" for c in claude_md)
+    agents_md = []
+    for rp, f in relpaths.items():
+        if f.name == "AGENTS.md":
+            t = read_text(f)
+            at_root = str(Path(rp).parent) in {".", ".claude"}
+            agents_md.append({"path": rp, "at_root": at_root, "lines": body_lines(t), "approx_tokens": approx_tokens(t),
+                              "loads": ("always (read natively, no CLAUDE.md)" if not has_root_claude else "only if imported")
+                              if at_root else "on-demand (folders without their own CLAUDE.md)"})
+
     # ---- Imports from always-loaded files ----
     imports, seen = [], set()
-    for c in claude_md:
-        if c["loads"] == "always":
-            imports.extend(find_imports(relpaths[c["path"]], root, seen))
-    for r in rules:
-        if r["loads"] == "always":
-            imports.extend(find_imports(relpaths[r["path"]], root, seen))
+    launch_files = [c["path"] for c in claude_md if c["loads"] == "always"] + \
+                   [r["path"] for r in rules if r["loads"] == "always"] + \
+                   [a["path"] for a in agents_md if a["loads"].startswith("always")]
+    for lp in launch_files:
+        imports.extend(find_imports(relpaths[lp], root, seen))
+    imported = {Path(i["resolved"]).as_posix() for i in imports}
+    for a in agents_md:
+        if a["at_root"] and has_root_claude:
+            a["loads"] = "always (imported by CLAUDE.md)" if a["path"] in imported else "never (CLAUDE.md exists and doesn't import it)"
+
+    sessions = session_counts(root)
+    nested_dirs = {str(Path(x["path"]).parent) for x in claude_md + agents_md if str(Path(x["path"]).parent) not in {".", ".claude"}}
+    units = find_units(root, sorted(tracked) if git_code == 0 else sorted(relpaths), rules, nested_dirs, sessions)
+
+    # ---- Monorepo parts: is each one covered by area instructions? ----
+    parts = []
+    for ar in app_roots:
+        if ar == ".":
+            continue
+        inside = [p for p in relpaths if p.startswith(ar + "/")]
+        nested = any(str(Path(x["path"]).parent).startswith(ar) for x in claude_md + agents_md)
+        scoped = [r["path"] for r in rules if r["paths"] and any(glob_match(p, g) for g in r["paths"] for p in inside)]
+        last = git(root, "log", "-1", "--format=%ct", "--", ar)[1]
+        last_ts = int(last[0].strip()) if last and last[0].strip().isdigit() else None
+        parts.append({"root": ar, "files": len(inside), "nested_instructions": nested, "rules": scoped,
+                      "sessions": sum(n for enc, n in sessions.items() if match_session_dir(enc, ar)),
+                      "last_change": time.strftime("%Y-%m-%d", time.localtime(last_ts)) if last_ts else None,
+                      "dormant": bool(last_ts and time.time() - last_ts > 365 * 86400)})
 
     # ---- Settings ----
     settings = {}
@@ -374,7 +588,7 @@ def scan(root: Path) -> dict:
             other_detail.append({"path": p, "lines": body_lines(t)})
         else:
             other_detail.append({"path": p, "files": sum(1 for x in fp.rglob("*") if x.is_file())})
-    nested_agents_md = [rp for rp in relpaths if rp.endswith("/AGENTS.md")]
+    nested_agents_md = [a["path"] for a in agents_md if not a["at_root"]]
 
     # ---- Secrets (names only, never read) ----
     secret_files = sorted({rp for rp, f in relpaths.items()
@@ -385,25 +599,48 @@ def scan(root: Path) -> dict:
     env_examples = sorted(rp for rp, f in relpaths.items() if f.name in SECRET_SAFE)
 
     # ---- Quality checks across instruction files ----
-    instr_paths = [c["path"] for c in claude_md] + [r["path"] for r in rules] + \
-                  [p["path"] for p in other_detail if "lines" in p]
+    other_dir_files = sorted(rp for rp in relpaths if any(rp.startswith(d + "/") for d in OTHER_TOOL_DIRS))
+    instr_paths = list(dict.fromkeys(
+        [c["path"] for c in claude_md] + [r["path"] for r in rules] + [a["path"] for a in agents_md] +
+        [p["path"] for p in other_detail if "lines" in p] + other_dir_files +
+        [x["path"] for x in skills + agents + commands]))
+    # READMEs are checked for stale commands only: the audit trusts README commands as a source.
+    readmes = [rp for rp in relpaths if Path(rp).name.lower() == "readme.md"
+               and str(Path(rp).parent) in set(app_roots) | {"."}]
+    # Instructions often name files relative to some folder (`users/api/v1/views.py`) or bare
+    # (`utils.py`): a ref counts as present if any repo path ends with it.
+    known = set(relpaths) | {a.as_posix() for p in relpaths for a in Path(p).parents if a.as_posix() != "."}
+
+    def ref_exists(ref: str, ip: str) -> bool:
+        return (root / ref).exists() or ((root / ip).parent / ref).exists() or \
+            any(k == ref or k.endswith("/" + ref) for k in known)
+
+    negation = re.compile(r"\b(no|not|never|don't|doesn't|without|instead of)\b", re.I)
     line_index: dict[str, list[str]] = {}
     stale_paths, stale_cmds = [], []
     for ip in instr_paths:
         t = read_text(root / ip)
-        content_lines = strip_html_comments(t).splitlines()
         for l in strip_code(strip_html_comments(t)):
             n = norm_line(l)
             if len(n) >= 25 and not n.startswith("#"):
                 line_index.setdefault(n, []).append(ip)
-        for m in BACKTICK_PATH_RE.finditer(t):
-            ref = m.group(1).rstrip("/.")
-            if any(ch in ref for ch in "*{}<>$") or ref.startswith(("http", "~")):
-                continue
-            base = (root / ip).parent
-            if not ((root / ref).exists() or (base / ref).exists()):
-                stale_paths.append({"file": ip, "ref": ref})
-        all_scripts = set().union(*npm_scripts.values()) if npm_scripts else set()
+            if ip in launch_files:
+                continue  # their @imports are resolved (and reported) above
+            for m in IMPORT_RE.finditer(re.sub(r"`[^`]*`", "", l)):
+                ref = m.group(1).rstrip(".,;:)")
+                if Path(ref).suffix and not ref_exists(ref, ip):
+                    stale_paths.append({"file": ip, "ref": "@" + ref})
+            if negation.search(l):
+                continue  # "there is no `services/` package" names a path on purpose
+            for m in BACKTICK_PATH_RE.finditer(l):
+                ref = m.group(1).rstrip("/.")
+                if any(ch in ref for ch in "*{}<>$") or ref.startswith(("http", "~")):
+                    continue
+                if not ref_exists(ref, ip):
+                    stale_paths.append({"file": ip, "ref": ref})
+    all_scripts = set().union(*npm_scripts.values()) if npm_scripts else set()
+    for ip in instr_paths + readmes:
+        t = read_text(root / ip)
         for l in code_segments(strip_html_comments(t)):
             for m in NPM_RE.finditer(l):
                 s = m.group(1)
@@ -424,10 +661,13 @@ def scan(root: Path) -> dict:
     duplicates = [{"line": k[:120], "files": sorted(set(v))} for k, v in line_index.items() if len(set(v)) > 1]
 
     # ---- Always-loaded budget ----
-    always_lines = sum(c["lines"] for c in claude_md if c["loads"] == "always") + \
+    native_agents = [a for a in agents_md if a["loads"].startswith("always (read")]
+    always_lines = sum(a["lines"] for a in native_agents) + \
+                   sum(c["lines"] for c in claude_md if c["loads"] == "always") + \
                    sum(r["lines"] for r in rules if r["loads"] == "always") + \
                    sum(i["lines"] for i in imports if i["exists"])
-    always_tokens = sum(c["approx_tokens"] for c in claude_md if c["loads"] == "always") + \
+    always_tokens = sum(a["approx_tokens"] for a in native_agents) + \
+                    sum(c["approx_tokens"] for c in claude_md if c["loads"] == "always") + \
                     sum(r["approx_tokens"] for r in rules if r["loads"] == "always") + \
                     sum(i["approx_tokens"] for i in imports if i["exists"])
     desc_chars = sum(x["description_chars"] for x in skills + agents + commands if x["model_invocable"])
@@ -468,21 +708,53 @@ def scan(root: Path) -> dict:
     for d in duplicates[:20]:
         add("medium", f"same instruction appears in {len(d['files'])} files: \"{d['line'][:80]}\"", ", ".join(d["files"]))
     for s in stale_paths[:30]:
-        add("medium", f"references `{s['ref']}` which doesn't exist", s["file"])
+        add("medium" if "/" in s["ref"] else "low", f"references `{s['ref']}`, which no repo path matches", s["file"])
     for s in stale_cmds[:30]:
-        add("high", f"`{s['command']}`: {s['issue']}", s["file"])
+        add("medium" if s["file"] in readmes else "high", f"`{s['command']}`: {s['issue']}", s["file"])
     for label, items, cap in (("duplicate", duplicates, 20), ("stale path", stale_paths, 30),
                               ("stale command", stale_cmds, 30)):
         if len(items) > cap:
             add("info", f"...and {len(items) - cap} more {label} findings (full list under `checks` in --format json)")
-    if not claude_md and not other:
+    for pt in parts:
+        if pt["dormant"]:
+            add("info", f"`{pt['root']}/` hasn't changed since {pt['last_change']}; low priority for instructions")
+        elif not pt["nested_instructions"] and not pt["rules"]:
+            add("medium", f"`{pt['root']}/` ({pt['files']} files) has no area instructions: no path-scoped rule "
+                          "or nested CLAUDE.md/AGENTS.md matches its files")
+    candidates = [u for u in units if u["strength"] == "strong" and not u["covered_by"]]
+    for u in candidates[:UNIT_TOP]:
+        add("medium", f"`{u['unit']}/` may need its own {u['suggested_home']}: {'; '.join(u['reasons'])}")
+    if len(candidates) > UNIT_TOP:
+        add("info", f"...and {len(candidates) - UNIT_TOP} more unit candidates (see `units` in --format json)")
+    for r in rules:
+        if r["external_symlink"] and r["paths"]:
+            add("high", "symlink points outside the repo; path-scoped external rules never load", r["path"])
+    for x in skills:
+        if x["pointer_only"]:
+            add("medium", "skill only points to another file; if it's constraints for certain files, a path-scoped "
+                          "`.claude/rules/` file (a symlink works) loads them automatically with no per-turn cost", x["path"])
+    claude_present = bool(claude_md or rules or skills or agents or commands or
+                          any(a["loads"].startswith("always (read") for a in agents_md))
+    if not claude_present and not other:
         add("info", "no AI instruction files found (greenfield)")
-    if other and not claude_md:
-        add("medium", f"other tools' instruction files exist ({', '.join(other)}); reuse them (e.g. CLAUDE.md importing AGENTS.md) instead of duplicating")
-    imported = {Path(i["resolved"]).as_posix() for i in imports}
-    unlinked = [p for p in other if p.rstrip("/") not in imported]
-    if unlinked and claude_md:
+    if other and not claude_present:
+        add("medium", f"only other tools' instruction files exist ({', '.join(other)}); Claude reads none of them. "
+                      "Share them via AGENTS.md (Claude reads it natively) or a CLAUDE.md that imports it")
+    for a in agents_md:
+        if a["loads"].startswith("never"):
+            add("high", "Claude ignores this AGENTS.md because a root CLAUDE.md exists; add `@AGENTS.md` to CLAUDE.md", a["path"])
+    unlinked = [p for p in other if p != "AGENTS.md" and p.rstrip("/") not in imported]
+    if unlinked and claude_present:
         add("low", f"both Claude and other-tool instruction files exist ({', '.join(unlinked)}); check for drift/duplication")
+    local_only = {"CLAUDE.local.md", "settings.local.json"}
+    link_targets = [rel(relpaths[r["path"]].resolve(), root) for r in rules
+                    if relpaths[r["path"]].is_symlink() and not r["external_symlink"]]
+    shared = list(dict.fromkeys(instr_paths + link_targets +
+                                ([".claude/settings.json"] if ".claude/settings.json" in settings else [])))
+    untracked = [p for p in shared if git_code == 0 and p not in tracked and Path(p).name not in local_only]
+    if untracked:
+        add("medium", f"instruction files not committed, so teammates don't get them: {', '.join(untracked[:10])}"
+                      + (f" (+{len(untracked) - 10} more)" if len(untracked) > 10 else ""))
     if tracked_secrets:
         add("high", f"secret-like files are committed to git (gitignore doesn't untrack them; "
                     f"`git rm --cached` and rotate): {', '.join(tracked_secrets[:10])}")
@@ -496,25 +768,27 @@ def scan(root: Path) -> dict:
         add("high", f"secret-like files not denied by Read() rules in .claude/settings.json: {', '.join(undenied[:10])}")
     if ".claude/settings.json" not in settings:
         add("medium", "no .claude/settings.json (no shared permission guardrails or hooks)")
-    if not env_examples and secret_files:
+    if not env_examples and any(Path(p).name.startswith(".env") for p in secret_files):
         add("medium", "env files exist but no .env.example documents the variable names")
     if not ci:
         add("low", "no CI config found")
 
     findings.sort(key=lambda f: SEV_ORDER[f["severity"]])
 
-    state = "greenfield" if not claude_md and not other and not rules else \
-            "other-tools-only" if not claude_md and not rules else "existing"
+    state = "existing" if claude_present else "other-tools-only" if other else "greenfield"
 
     return {
         "repo": root.name,
         "state": state,
         "stack": {"manifests": sorted(manifests, key=lambda m: m["path"]), "app_roots": app_roots,
-                  "is_monorepo": is_monorepo, "ci": ci,
+                  "is_monorepo": is_monorepo, "ci": ci, "parts": parts,
                   "npm_scripts": {k: sorted(v) for k, v in npm_scripts.items()},
                   "make_targets": sorted(make_targets)},
         "claude": {"claude_md": claude_md, "rules": rules, "imports": imports, "skills": skills,
                    "agents": agents, "commands": commands, "settings": settings, "mcp_json": mcp_json},
+        "agents_md": agents_md,
+        "units": units,
+        "sessions": sessions,
         "other_tools": {"files": other_detail, "nested_agents_md": nested_agents_md},
         "context_budget": {"always_loaded_lines": always_lines, "always_loaded_approx_tokens": always_tokens,
                            "target_lines": BUDGET_ALWAYS_LOADED,
@@ -543,14 +817,41 @@ def to_md(r: dict) -> str:
         L.append(f"| `{c['path']}` | {c['loads']} | {c['lines']} |")
     for x in r["claude"]["rules"]:
         L.append(f"| `{x['path']}` | {x['loads']} | {x['lines']} |")
+    for a in r["agents_md"]:
+        L.append(f"| `{a['path']}` | {a['loads']} | {a['lines']} |")
     for i in r["claude"]["imports"]:
         L.append(f"| `@{i['import']}` (from `{i['from']}`) | always (import) | {i['lines']} |")
-    for o in r["other_tools"]["files"]:
+    for o in [o for o in r["other_tools"]["files"] if o["path"] != "AGENTS.md"]:
         L.append(f"| `{o['path']}` | other tool | {o.get('lines', str(o.get('files')) + ' files')} |")
     L += ["", f"Skills: {len(r['claude']['skills'])} · Agents: {len(r['claude']['agents'])} · "
           f"Commands: {len(r['claude']['commands'])} · Settings: {', '.join(r['claude']['settings']) or 'none'}"]
     L += ["", "## Stack", ""] + [f"- `{m['path']}` ({m['kind']})" for m in r["stack"]["manifests"]]
     L += [f"- CI: {', '.join(r['stack']['ci']) or 'none'}"]
+    for pt in r["stack"]["parts"]:
+        cov = ", ".join(pt["rules"]) or ("nested CLAUDE.md/AGENTS.md" if pt["nested_instructions"] else "none")
+        L.append(f"- Part `{pt['root']}/`: {pt['files']} files, last change {pt['last_change'] or '?'}"
+                 f"{' (dormant)' if pt['dormant'] else ''}, instructions: {cov}")
+    cands = [u for u in r["units"] if u["strength"] == "strong"]
+    weak = [u for u in r["units"] if u["strength"] == "weak"]
+    if r["units"]:
+        counts = {}
+        for u in r["units"]:
+            counts[u["collection"]] = counts.get(u["collection"], 0) + 1
+        colls = ", ".join(f"`{c}/` ({n} units)" for c, n in sorted(counts.items()))
+        L += ["", "## Units (subfolders that may need their own instructions)", "",
+              f"Collections: {colls}. Window: last {UNIT_WINDOW_DAYS} days.", ""]
+        if cands:
+            L += ["| Unit | Code files | Commits (fixes) | Signals | Suggested home | Covered by |", "|---|---|---|---|---|---|"]
+            for u in cands[:UNIT_TOP * 2]:
+                L.append(f"| `{u['unit']}/` | {u['code_files']} | {u['commits']} ({u['fix_commits']}) | "
+                         f"{'; '.join(u['reasons'])} | {u['suggested_home']} | {', '.join(u['covered_by']) or '-'} |")
+        else:
+            L.append("No unit stands out from its siblings; collection-wide rules are enough.")
+        if weak:
+            L += ["", "One signal only (watch with `/agent-readiness:learn`, no file yet): " +
+                  ", ".join(f"`{u['unit']}/` ({u['reasons'][0]})" for u in weak[:UNIT_TOP])]
+    if r["sessions"]:
+        L += ["", "Sessions started here: " + ", ".join(f"`{k}` {v}" for k, v in sorted(r["sessions"].items()))]
     L += ["", "## Hygiene (scorecard S8-S11)", ""] + \
          [f"- {k}: {', '.join(v) or 'none found'}" for k, v in r["hygiene"].items()]
     return "\n".join(L) + "\n"

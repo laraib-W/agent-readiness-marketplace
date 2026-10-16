@@ -19,9 +19,21 @@ Reading secrets and local data, for every pattern that applies to this repo:
 ]
 ```
 
-Add repo-specific paths: data dumps, `*.sqlite3`, fixture folders with real personal data, cloud credential folders. `.env.example` stays readable; if a deny pattern would catch it, use more specific patterns.
+Add repo-specific paths: data dumps, `*.sqlite3`, fixture folders with real personal data, cloud credential folders, folders the code writes exports or uploads to, and **config files the settings loader reads credentials from** (e.g. `settings/*_config.json` picked by an env var). Find those by reading the loader, not the files. `.env.example` stays readable; if a deny pattern would catch it, use more specific patterns.
 
 `Read()` deny rules govern Claude's file tools, not shell commands: `cat .env` through Bash isn't blocked by them. For real protection also enable sandboxing (`"sandbox": {"enabled": true}`) or add a `PreToolUse` hook on `Bash` that rejects commands touching the denied paths. Verify the current behaviour at https://code.claude.com/docs/en/permissions and say which option you chose in the report.
+
+Hook shape (the hook gets the tool call as JSON on stdin; exit 2 blocks it and shows stderr to Claude). Put this repo's denied patterns in the regex:
+
+```json
+"PreToolUse": [
+  { "matcher": "Bash",
+    "hooks": [ { "type": "command",
+      "command": "grep -qE '<pattern>|<pattern>' && { echo 'Blocked: touches a secret or data path' >&2; exit 2; } || exit 0" } ] }
+]
+```
+
+Before writing it, pipe a few sample payloads (`{"tool_name":"Bash","tool_input":{"command":"..."}}`) through the command: denied paths must exit 2, and the repo's normal test/lint commands must exit 0.
 
 ## Ask (approval each time)
 
