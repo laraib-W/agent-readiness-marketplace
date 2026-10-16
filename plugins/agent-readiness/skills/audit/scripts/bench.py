@@ -271,9 +271,10 @@ def parse_stream(text: str) -> dict:
 
 
 def run_claude(cwd: Path, prompt: str, tools: list[str], blocked: list[str], model: str | None,
-               per_run_usd: float) -> dict:
+               per_run_usd: float, extra: list[str] | None = None) -> dict:
     cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose",
-           "--max-budget-usd", str(per_run_usd), *ISOLATION, "--disallowedTools", *blocked, "--allowedTools", *tools]
+           "--max-budget-usd", str(per_run_usd), *ISOLATION, *(extra or []),
+           "--disallowedTools", *blocked, "--allowedTools", *tools]
     if model:
         cmd[3:3] = ["--model", model]
     proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

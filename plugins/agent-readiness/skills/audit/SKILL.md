@@ -1,9 +1,9 @@
 ---
 name: audit
 description: Make any repository agent-ready for Claude Code. Detects whether AI instruction files already exist, scores readiness, and proposes repo-specific, token-efficient CLAUDE.md, rules, skills, agents and guardrails; applies only what the user approves.
-argument-hint: "[scan | report | apply | bench] [optional sub-path] [layout=auto|nested|rules]"
+argument-hint: "[scan | report | apply | bench | eval] [optional sub-path] [layout=auto|nested|rules]"
 disable-model-invocation: true
-allowed-tools: Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/scan.py *), Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/bench.py *)
+allowed-tools: Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/scan.py *), Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/bench.py *), Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/evals.py *)
 ---
 
 # Agent readiness audit
@@ -15,6 +15,7 @@ Arguments: `$ARGUMENTS`
 - `apply` or no argument: full flow, steps 1–8.
 - A path (e.g. `backend/`): limit discovery and proposals to that part of the repo.
 - `bench`: measure the instructions with real headless Claude runs, before vs after (see **Benchmark** below). Costs tokens.
+- `eval`: can an agent redo real merged changes, graded by their own tests, with and without the instructions (see **Eval harness** below). `build` is free; `run` costs tokens.
 - `layout=nested` or `layout=rules`: where per-unit instructions go (default `auto`, decided by the scan). Pass it to the scan as `--layout`.
 
 ## Non-negotiables
@@ -81,4 +82,15 @@ Measures whether the instruction files actually help, using real headless Claude
 4. Summarize: median cost, turns, tool calls and tokens per task (before → after), the key-fact hit rate, and any canary marked **LEAKED**. A leak means a deny rule or hook doesn't work in a live session: fix the guardrail before anything else. Differences marked `~` are within noise.
 
 Runs are isolated from the user's own settings, plugins and MCP servers (`--setting-sources project --strict-mcp-config`), and aren't saved as sessions. Canary files hold fake text, never real secrets.
+
+## Eval harness (`eval`)
+
+Measures whether agents can make real changes here, not just answer questions. Tasks are merged PRs that change code and tests; the PR's tests, hidden from the agent, grade its work.
+
+1. **Test command.** Take the verified single-test command from the instructions or discovery and turn it into a template with `{python}` and `{tests}` (e.g. `TEST_RUN=true {python} -m pytest {tests} -q`). If tests can't run locally (missing packages, broken baseline), stop and say what to fix: the harness can't grade without them.
+2. **Build (free):** `python3 -I ${CLAUDE_SKILL_DIR}/scripts/evals.py build . --test-cmd '<template>' [--branch <main branch>]`. It mines recent merged PRs (code + tests, no migrations, small), and keeps only those whose tests fail on the commit before the PR and pass on the merge. Files the tests need that are secret-like (e.g. a config JSON) stay in the copy but are denied to the agent. It writes `docs/agent-readiness/evals/tasks.json`. Show the valid tasks and the skip reasons.
+3. **Plan, then ask.** `python3 -I ${CLAUDE_SKILL_DIR}/scripts/evals.py run .` prints the plan and caps. Edit tasks cost more than `bench` runs; ask before spending.
+4. **Run:** add `--yes --out docs/agent-readiness/evals/report.md`. Report the pass rate before vs after, per task cost and turns, and how often the agent touched the same files as the PR. Treat a handful of tasks as a smoke test, not a score.
+
+Agents may only read, edit inside their temp copy, and run the test command. Grading executes the agent's code in the temp copy with a minimal environment; network isn't blocked, so only run it on code you'd let an agent run anyway.
 
