@@ -1,9 +1,9 @@
 ---
 name: audit
 description: Make any repository agent-ready for Claude Code. Detects whether AI instruction files already exist, scores readiness, and proposes repo-specific, token-efficient CLAUDE.md, rules, skills, agents and guardrails; applies only what the user approves.
-argument-hint: "[scan | report | apply] [optional sub-path] [layout=auto|nested|rules]"
+argument-hint: "[scan | report | apply | bench] [optional sub-path] [layout=auto|nested|rules]"
 disable-model-invocation: true
-allowed-tools: Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/scan.py *)
+allowed-tools: Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/scan.py *), Bash(python3 -I ${CLAUDE_SKILL_DIR}/scripts/bench.py *)
 ---
 
 # Agent readiness audit
@@ -14,6 +14,7 @@ Arguments: `$ARGUMENTS`
 - `report`: steps 1–6, write the report, change nothing else.
 - `apply` or no argument: full flow, steps 1–8.
 - A path (e.g. `backend/`): limit discovery and proposals to that part of the repo.
+- `bench`: measure the instructions with real headless Claude runs, before vs after (see **Benchmark** below). Costs tokens.
 - `layout=nested` or `layout=rules`: where per-unit instructions go (default `auto`, decided by the scan). Pass it to the scan as `--layout`.
 
 ## Non-negotiables
@@ -69,3 +70,15 @@ Ask which rows of the change plan to apply; only in-scope rows (non-negotiable 6
 
 ### 8. Verify
 Re-run the scan. Report before → after for: findings by severity, always-loaded lines and tokens, the three sub-scores and the level. If the scan says instruction files aren't committed, tell the user to review and commit them (don't do it for them); until then nobody else benefits. Tell the user how to confirm in a live session (`/context`, and touching a file in each scoped area to see the `Loaded` line). Suggest `/agent-readiness:learn` for the ongoing feedback loop, and a scheduled re-audit: `scan.py --fail-on high` in CI, or a scheduled Claude Code routine (`/schedule`) running `/agent-readiness:audit report`.
+
+## Benchmark (`bench`)
+
+Measures whether the instruction files actually help, using real headless Claude runs. It never modifies the repo: it builds two throwaway copies, BEFORE (a git ref, default `HEAD`) and AFTER (the same ref plus the working tree's instruction files), so the instruction files are the only difference.
+
+1. Run `python3 -I ${CLAUDE_SKILL_DIR}/scripts/bench.py .` with no `--yes`. It only prints the plan: tasks picked from the scan (path-scoped areas and covered strong units, each with the paths and names its instructions point to), guardrail canary probes, the number of runs, and the cost caps.
+2. Show the plan to the user and **ask before spending**. They can change `--runs`, `--max-tasks`, `--model`, `--per-run-usd`, `--budget-usd`, pass their own tasks with `--tasks file.json`, or skip probes with `--no-probes`.
+3. On approval, run it with `--yes --out docs/agent-readiness/benchmark.md --raw docs/agent-readiness/benchmark.json`.
+4. Summarize: median cost, turns, tool calls and tokens per task (before → after), the key-fact hit rate, and any canary marked **LEAKED**. A leak means a deny rule or hook doesn't work in a live session: fix the guardrail before anything else. Differences marked `~` are within noise.
+
+Runs are isolated from the user's own settings, plugins and MCP servers (`--setting-sources project --strict-mcp-config`), and aren't saved as sessions. Canary files hold fake text, never real secrets.
+

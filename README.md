@@ -12,6 +12,7 @@ Its output is specific to each repo: every proposed instruction must cite eviden
 | `/agent-readiness:learn` | Skill (user-triggered) | Turns a correction into the narrowest rule (hook, path-scoped rule, nested or root `CLAUDE.md`) and prunes stale rules |
 | `repo-architect` | Subagent (Read/Glob/Grep only) | Maps the app: stack, modules, data model, API, auth, frontend, commands, risk zones |
 | `instruction-auditor` | Subagent (read-only by instruction; Bash for `git log`) | Checks existing instruction files against the code: stale, wrong, duplicated, misplaced |
+| `bench.py` | Script (stdlib Python) | Before/after benchmark with real headless Claude runs: cost, turns, tokens, key facts mentioned, and canary probes that check the guardrails actually block secret reads. Plans first, spends only with `--yes` |
 | `scan.py` | Script (stdlib Python) | Deterministic facts: instruction files and when they load, always-loaded size, broken imports/globs, stale commands/paths, duplicates, secret-file protection, and which subfolders (apps, features, packages) stand out from their siblings enough to need their own rule or `CLAUDE.md` |
 
 It complements the built-in `/doctor prompt-audit`, which reviews instruction wording. This plugin adds the deterministic scan, scoring, file layout and guardrails.
@@ -40,6 +41,7 @@ In the repo you want to improve:
 /agent-readiness:audit report      # full analysis + change plan, changes nothing
 /agent-readiness:audit             # full flow, applies only what you approve
 /agent-readiness:audit backend/    # focus on one part of a monorepo
+/agent-readiness:audit bench       # measure before vs after with real runs (asks before spending)
 /agent-readiness:learn "Claude put business logic in the view again"
 ```
 
@@ -50,7 +52,7 @@ python3 plugins/agent-readiness/skills/audit/scripts/scan.py /path/to/repo --for
 
 Add `--fail-on high` (or `medium`/`low`) to exit 1 when findings at that severity exist.
 
-Scanner regression check: `python3 tests/test_scan.py`.
+Regression checks: `python3 tests/test_scan.py` and `python3 tests/test_bench.py` (uses a fake `claude`, spends nothing).
 
 Outputs go to `docs/agent-readiness/` in the target repo (`report.md`, `lessons.md`).
 
