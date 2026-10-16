@@ -68,7 +68,7 @@ SECRET_SAFE = {".env.example", ".env.sample", ".env.template", ".env.dist"}
 # Source files named like secrets (e.g. Django's secrets.py) are code, not secrets.
 CODE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rb", ".rs", ".java",
              ".kt", ".php", ".cs", ".swift", ".scala", ".ex", ".exs"}
-# Files that answer scorecard criteria S8-S11 (existence only).
+# Files that answer scorecard criteria H4-H6 and part of E1 (existence only).
 HYGIENE = {
     "pre_commit": [".pre-commit-config.yaml", ".husky", "lefthook.yml", "lefthook.yaml", ".lefthook.yml"],
     "codeowners": ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"],
@@ -1026,7 +1026,7 @@ def to_md(r: dict) -> str:
                   ", ".join(f"`{u['unit']}/` ({u['reasons'][0]})" for u in weak[:UNIT_TOP])]
     if r["sessions"]:
         L += ["", "Sessions started here: " + ", ".join(f"`{k}` {v}" for k, v in sorted(r["sessions"].items()))]
-    L += ["", "## Hygiene (scorecard S8-S11)", ""] + \
+    L += ["", "## Repo files (scorecard H4-H6, E1)", ""] + \
          [f"- {k}: {', '.join(v) or 'none found'}" for k, v in r["hygiene"].items()]
     return "\n".join(L) + "\n"
 

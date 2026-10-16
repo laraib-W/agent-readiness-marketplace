@@ -64,4 +64,10 @@ Outputs go to `docs/agent-readiness/` in the target repo (`report.md`, `lessons.
 
 ## Scoring
 
-20 criteria (9 core, 11 supporting), scored 0/1/2, plus a 5-level maturity model (Functional → Documented → Standardized → Optimized → Autonomous) adapted from Factory's Agent Readiness Model. See `skills/audit/references/scorecard.md`.
+Three sub-scores, each criterion 0/1/2, reported separately rather than added up:
+
+- **A. Agent context** (6 criteria): instructions, relevant context only, accuracy, secrets out of reach, approval for dangerous actions, feedback after edits. This is what the plugin builds.
+- **E. Agent environment** (8): setup, run, tests, risk-zone tests, lint, type checking, CI, local data. Can the agent check its own work? The team fixes these.
+- **H. Repo hygiene** (6): secrets in git, docs, conventions, pre-commit, review routing, security automation. Good practice, not agent-specific.
+
+A 5-level maturity model (Functional → Documented → Standardized → Optimized → Autonomous), adapted from Factory's Agent Readiness Model, gates on context and environment only. Every report includes a roadmap to the next two levels, split into plugin and team fixes. See `skills/audit/references/scorecard.md`.

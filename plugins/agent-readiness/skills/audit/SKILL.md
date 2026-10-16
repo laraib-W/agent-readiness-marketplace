@@ -32,7 +32,7 @@ Run:
 ```
 python3 -I ${CLAUDE_SKILL_DIR}/scripts/scan.py . --format md
 ```
-Keep the output; it gives the repo **state** (`greenfield`, `other-tools-only`, `existing`), the stack, every instruction file with when it loads, the always-loaded size, and mechanical findings (stale commands/paths, duplicates, unscoped rules, missing guardrails, committed secrets), and a `Hygiene` section that answers scorecard S8–S11. Don't re-derive what the scan already measured.
+Keep the output; it gives the repo **state** (`greenfield`, `other-tools-only`, `existing`), the stack, every instruction file with when it loads, the always-loaded size, and mechanical findings (stale commands/paths, duplicates, unscoped rules, missing guardrails, committed secrets), and a `Repo files` section that answers scorecard H4–H6. Don't re-derive what the scan already measured.
 
 If the argument is `scan`, show it and stop.
 
@@ -43,14 +43,14 @@ Delegate to the **repo-architect** subagent. Give it the scan output (including 
 Delegate to the **instruction-auditor** subagent with the scan output, the architecture summary, and the path `${CLAUDE_SKILL_DIR}/references/audit-existing.md` for its classification rules. It checks every existing instruction file (Claude and other tools) against the code: stale, wrong, generic, duplicated, conflicting, or misplaced content. Read `${CLAUDE_SKILL_DIR}/references/audit-existing.md` to interpret its result. If the user also runs the built-in `/doctor prompt-audit`, it covers wording quality; don't repeat its findings.
 
 ### 4. Score
-Read `${CLAUDE_SKILL_DIR}/references/scorecard.md`. Score every criterion 0/1/2 using scan + discovery + audit evidence, compute the maturity level, and list the top 5 fixes by impact ÷ effort.
+Read `${CLAUDE_SKILL_DIR}/references/scorecard.md`. Score every criterion 0/1/2 using scan + discovery + audit evidence, report the three sub-scores (A context, E environment, H hygiene) separately, compute the maturity level from A and E, and list the top 5 fixes by impact ÷ effort.
 
 ### 5. Decide the structure
 Read `${CLAUDE_SKILL_DIR}/references/structure-decision.md` and answer each decision for this repo with evidence. The shape must follow the repo: a single small app may need only a short root `CLAUDE.md` and a `settings.json`; a monorepo may need per-part rules, and strong units inside a part may need their own (§1b). Don't add skills, agents or commands without a concrete, repo-specific reason.
 
 ### 6. Write the report
 Write `docs/agent-readiness/report.md` (create the folder) containing:
-1. Summary: state, maturity level, score, always-loaded size now → after the proposal
+1. Summary: state, maturity level, the three sub-scores, always-loaded size now → after the proposal
 2. Architecture summary (from step 2, trimmed)
 3. Scorecard table
 4. Findings on existing files (from step 3)
@@ -59,7 +59,7 @@ Write `docs/agent-readiness/report.md` (create the folder) containing:
 7. **Change plan**, a table with: action (create / edit / move / scope / delete) | file | why (evidence) | always-loaded lines delta
 8. Questions for the team / `UNVERIFIED` items
 
-Then show the user a short summary: level, score, the roadmap (what unlocks the next level), the change-plan table, and the context delta. Offer to apply the agent-doable roadmap fixes as change-plan rows. If the argument is `report`, stop here.
+Then show the user a short summary: level, the three sub-scores, the roadmap (what unlocks the next level), the change-plan table, and the context delta. Offer to apply the plugin's roadmap fixes as change-plan rows. If the argument is `report`, stop here.
 
 ### 7. Apply approved changes
 Ask which rows of the change plan to apply; only in-scope rows (non-negotiable 6) can be applied. For each approved row:
@@ -68,4 +68,4 @@ Ask which rows of the change plan to apply; only in-scope rows (non-negotiable 6
 - Never overwrite user-written content silently. Keep their wording where it is still correct.
 
 ### 8. Verify
-Re-run the scan. Report before → after for: findings by severity, always-loaded lines and tokens, score. If the scan says instruction files aren't committed, tell the user to review and commit them (don't do it for them); until then nobody else benefits. Tell the user how to confirm in a live session (`/context`, and touching a file in each scoped area to see the `Loaded` line). Suggest `/agent-readiness:learn` for the ongoing feedback loop, and a scheduled re-audit: `scan.py --fail-on high` in CI, or a scheduled Claude Code routine (`/schedule`) running `/agent-readiness:audit report`.
+Re-run the scan. Report before → after for: findings by severity, always-loaded lines and tokens, the three sub-scores and the level. If the scan says instruction files aren't committed, tell the user to review and commit them (don't do it for them); until then nobody else benefits. Tell the user how to confirm in a live session (`/context`, and touching a file in each scoped area to see the `Loaded` line). Suggest `/agent-readiness:learn` for the ongoing feedback loop, and a scheduled re-audit: `scan.py --fail-on high` in CI, or a scheduled Claude Code routine (`/schedule`) running `/agent-readiness:audit report`.
