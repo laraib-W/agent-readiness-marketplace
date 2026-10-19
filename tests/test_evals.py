@@ -63,7 +63,18 @@ def test_evals():
         git(repo, "commit", "-qm", "More add tests")
         git(repo, "checkout", "-q", "main")
         git(repo, "merge", "-q", "--no-ff", "chore", "-m", "Merge pull request #8 from org/chore", "-m", "Tidy")
-        # uncommitted instruction files + a deny rule covering the config the tests need
+        # PR 9: a flaky test (alternates pass/fail through a file the test itself toggles)
+        git(repo, "checkout", "-qb", "flaky")
+        (repo / "app/calc.py").write_text((repo / "app/calc.py").read_text() + "\n\ndef sub(a, b):\n    return a - b\n")
+        (repo / "tests/test_sub.py").write_text(
+            "import os, unittest\nfrom app import calc\n\nclass T(unittest.TestCase):\n    def test_sub(self):\n"
+            "        flip = os.path.exists('.flip')\n        open('.flip', 'w').close() if not flip else os.remove('.flip')\n"
+            "        self.assertTrue(hasattr(calc, 'sub') and not flip)\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-qm", "Add sub()")
+        git(repo, "checkout", "-q", "main")
+        git(repo, "merge", "-q", "--no-ff", "flaky", "-m", "Merge pull request #9 from org/flaky", "-m", "Subtraction")
+                # uncommitted instruction files + a deny rule covering the config the tests need
         (repo / "AGENTS.md").write_text("# calc\n- `mul` multiplies.\n")
         (repo / ".claude").mkdir()
         (repo / ".claude/settings.json").write_text('{"permissions": {"deny": ["Read(./settings/*_config.json)"]}}')
@@ -83,6 +94,25 @@ def test_evals():
         assert by_id["pr-7"]["validation"]["valid"], by_id["pr-7"]["validation"]
         assert by_id["pr-7"]["validation"]["needs_files"] == ["settings/docker_config.json"]
         assert not by_id["pr-8"]["validation"]["valid"] and "already pass" in by_id["pr-8"]["validation"]["reason"]
+        assert not by_id["pr-9"]["validation"]["valid"] and by_id["pr-9"]["validation"]["reason"].startswith("flaky"), by_id["pr-9"]["validation"]
+        assert len(by_id["pr-7"]["validation"]["after_runs"]) == 3 and len(by_id["pr-7"]["validation"]["before_runs"]) == 3
+        # early stops: a non-discriminating PR runs its before side once; a flaky one stops at the first flip
+        assert len(by_id["pr-8"]["validation"]["before_runs"]) == 1, by_id["pr-8"]["validation"]
+        assert len(by_id["pr-9"]["validation"]["after_runs"]) == 2 and not by_id["pr-9"]["validation"]["before_runs"]
+        assert by_id["pr-7"]["validation"]["flakiness_checked"]
+
+        # reuse: a second build validates nothing again
+        again = subprocess.run([sys.executable, "-I", str(EVALS), "build", str(repo), "--test-cmd", cmd, "--branch", "main"],
+                               env=env, capture_output=True, text=True)
+        assert again.returncode == 0 and again.stdout.count("(reused)") == 3, again.stdout
+
+        # slow tests: one run over the limit means no repeats; kept, but marked unchecked
+        slow_out = d / "slow.json"
+        slow = subprocess.run([sys.executable, "-I", str(EVALS), "build", str(repo), "--test-cmd", cmd, "--branch", "main",
+                               "--max-test-seconds", "0", "--out", str(slow_out)], env=env, capture_output=True, text=True)
+        assert slow.returncode == 0, slow.stdout + slow.stderr
+        v7 = {t["id"]: t for t in json.loads(slow_out.read_text())["tasks"]}["pr-7"]["validation"]
+        assert v7["valid"] and not v7["flakiness_checked"] and len(v7["after_runs"]) == 1 and "unchecked" in v7["reason"], v7
         assert by_id["pr-7"]["title"] == "Add multiplication" and "- Add mul()" in by_id["pr-7"]["details"]
 
         plan = subprocess.run([sys.executable, "-I", str(EVALS), "run", str(repo)], env=env, capture_output=True, text=True)

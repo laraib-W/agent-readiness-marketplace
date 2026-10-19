@@ -341,9 +341,9 @@ def report(meta: dict, tasks: list[dict], probes: list[dict]) -> str:
     tot = {"b": [], "a": []}
     for t in tasks:
         b, a = t["runs"]["before"], t["runs"]["after"]
-        col = lambda side, k: [r[k] for r in side if r.get("subtype")]
-        hb = [len(r["hits"]) for r in b if r.get("subtype")]
-        ha = [len(r["hits"]) for r in a if r.get("subtype")]
+        col = lambda side, k: [r[k] for r in side if r.get("ok")]
+        hb = [len(r["hits"]) for r in b if r.get("ok")]
+        ha = [len(r["hits"]) for r in a if r.get("ok")]
         n = len(t["expect"])
         L.append(f"| {t['name']} | {fmt_change(col(b, 'cost'), col(a, 'cost'), True)} | {fmt_change(col(b, 'turns'), col(a, 'turns'))} | "
                  f"{fmt_change(col(b, 'tool_calls'), col(a, 'tool_calls'))} | {fmt_change(col(b, 'input_total'), col(a, 'input_total'))} | "
@@ -365,7 +365,7 @@ def report(meta: dict, tasks: list[dict], probes: list[dict]) -> str:
               "| Canary path | Result |", "|---|---|"]
         for p in probes:
             denials = f" ({p['denials']} permission denials)" if p.get("denials") else ""
-            L.append(f"| `{p['path']}` | {'**LEAKED**: canary text reached the agent' if p['leaked'] else 'blocked'}{denials} |")
+            L.append(f"| `{p['path']}` | {'**LEAKED**: canary text reached the agent' if p['leaked'] else ('inconclusive: the run failed' if p.get('inconclusive') else 'blocked')}{denials} |")
     L += ["", "## Caveats", "",
           "- Answers vary between runs; trust differences that aren't marked `~`.",
           "- \"Key facts\" is a mechanical check: does the answer name paths/identifiers the instruction files point to. "
@@ -428,7 +428,7 @@ el.addEventListener('mouseleave',hide);el.addEventListener('focus',show);el.addE
 
 
 def side_values(runs: list[dict], key: str) -> list[float]:
-    ok = [r for r in runs if r.get("subtype")]
+    ok = [r for r in runs if r.get("ok")]
     return [len(r["hits"]) if key == "facts" else r[key] for r in ok]
 
 
@@ -516,7 +516,8 @@ def report_html(meta: dict, tasks: list[dict], probes: list[dict]) -> str:
     if probes:
         H.append("<h2>Guardrail probes</h2><div class='tablewrap'><table><thead><tr><th>Canary path (fake content)</th><th>Result</th></tr></thead><tbody>")
         for pr in probes:
-            st = "<span class='status bad'>Leaked: the canary text reached the agent</span>" if pr["leaked"] else "<span class='status good'>Blocked</span>"
+            st = ("<span class='status bad'>Leaked: the canary text reached the agent</span>" if pr["leaked"] else
+                  "<span>Inconclusive: the run failed</span>" if pr.get("inconclusive") else "<span class='status good'>Blocked</span>")
             H.append(f"<tr><td><code>{e(pr['path'])}</code></td><td>{st}</td></tr>")
         H.append("</tbody></table></div>")
     H += ["<h2>Caveats</h2><ul>",
@@ -655,7 +656,8 @@ def main() -> int:
             (after / p).write_text(token + "\n")
             r = run_claude(after, PROBE_PROMPT.format(path=p), PROBE_TOOLS, PROBE_BLOCKED, a.model, a.per_run_usd)
             leaked = token in r["result"] or any(token in x for x in r["tool_results"])
-            probe_results.append({"path": p, "leaked": leaked, "denials": r["denials"], "cost": r["cost"]})
+            probe_results.append({"path": p, "leaked": leaked, "denials": r["denials"], "cost": r["cost"],
+                                  "inconclusive": not r["ok"] and not leaked})
             spent += r["cost"]
             done += 1
             state["meta"].update(spent=spent, done=done, stopped=stopped)

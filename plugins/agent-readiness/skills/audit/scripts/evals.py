@@ -115,11 +115,15 @@ def mine(root: Path, branch: str, n: int) -> list[dict]:
     return out
 
 
-def validate(root: Path, task: dict, copy: Path, template: str, python: str, hidden: list[str]) -> dict:
-    """Free: tests must fail before the PR and pass after it. Learns which hidden files tests need."""
+def validate(root: Path, task: dict, copy: Path, template: str, python: str, hidden: list[str],
+             repeat: int = 3, max_test_seconds: float = 120) -> dict:
+    """Free: tests must fail before the PR and pass after it, the same way every time (repeat runs
+    weed out flaky tests, which would reward or penalize agents at random). Stops at the first
+    decisive result, and skips repeats when one run is slower than max_test_seconds. Learns which
+    hidden files the tests need."""
     needs: list[str] = []
     cmd = render_cmd(template, python, task["test_files"])
-    after = {"passed": False, "tail": ""}
+    after = {"passed": False, "tail": "", "seconds": 0}
     for _ in range(3):  # restore up to a few files the tests can't run without
         checkout(copy, task["merge"])
         bench.strip(copy, [h for h in hidden if h not in needs])
@@ -130,17 +134,43 @@ def validate(root: Path, task: dict, copy: Path, template: str, python: str, hid
         if after["passed"] or not missing:
             break
         needs += missing
+    checked = True
+
+    def result(ok, reason, afters, befores):
+        return {"valid": ok, "reason": reason, "needs_files": needs, "repeat": repeat, "flakiness_checked": checked,
+                "after_runs": [{"passed": r["passed"], "seconds": r["seconds"]} for r in afters],
+                "before_runs": [{"passed": r["passed"], "seconds": r["seconds"]} for r in befores],
+                "seconds": round(sum(r["seconds"] for r in afters + befores), 1),
+                "pass_after": afters[-1], "fail_before": befores[-1] if befores else None}
+
+    afters = [after]
+    if not after["passed"]:  # decisive: no point repeating or running the before side
+        return result(False, "tests fail on the merge commit too (environment or broken tests)", afters, [])
+    slow = after["seconds"] > max_test_seconds
+    checked = not slow or repeat <= 1
+    for _ in range(0 if slow else repeat - 1):
+        afters.append(run_tests(copy, cmd))
+        if not afters[-1]["passed"]:
+            return result(False, f"flaky: after the change passed {sum(r['passed'] for r in afters)}/{len(afters)}", afters, [])
+
     checkout(copy, task["base_sha"])
     bench.strip(copy, [h for h in hidden if h not in needs])
     for t in task["test_files"]:  # bring in the PR's tests, nothing else
         blob = subprocess.run(["git", "-C", str(root), "show", f"{task['merge']}:{t}"], capture_output=True)
         (copy / t).parent.mkdir(parents=True, exist_ok=True)
         (copy / t).write_bytes(blob.stdout)
-    before = run_tests(copy, cmd)
-    ok = after["passed"] and not before["passed"]
-    reason = ("ok" if ok else "tests fail on the merge commit too (environment or flaky)" if not after["passed"]
-              else "tests already pass before the change (not discriminating)")
-    return {"valid": ok, "reason": reason, "needs_files": needs, "pass_after": after, "fail_before": before}
+    befores = [run_tests(copy, cmd)]
+    if befores[0]["passed"]:  # decisive: passing even once before the change means it can't grade
+        return result(False, "tests already pass before the change (not discriminating)", afters, befores)
+    slow = slow or befores[0]["seconds"] > max_test_seconds
+    checked = checked and (not slow or repeat <= 1)
+    for _ in range(0 if slow else repeat - 1):
+        befores.append(run_tests(copy, cmd))
+        if befores[-1]["passed"]:
+            return result(False, f"flaky: before the change passed {sum(r['passed'] for r in befores)}/{len(befores)}",
+                          afters, befores)
+    return result(True, "ok" if checked else f"ok (flakiness unchecked: a run took over {max_test_seconds:.0f} s)",
+                  afters, befores)
 
 
 def repo_root(path: str) -> Path:
@@ -161,28 +191,54 @@ def cmd_build(a) -> int:
     python = a.python or default_python(root)
     cands = mine(root, a.branch, a.scan)
     print(f"{len(cands)} candidate PRs in the last {a.scan} merges of {a.branch}")
+    # Validate each PR once: reuse earlier results for the same merge commit, test command and repeats.
+    previous = {}
+    if Path(a.out).exists() and not a.revalidate:
+        try:
+            old = json.loads(Path(a.out).read_text())
+            if old.get("test_cmd") == a.test_cmd:
+                previous = {t["merge"]: t["validation"] for t in old.get("tasks", [])
+                            if t.get("validation", {}).get("repeat") == a.repeat}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
     start = bench.snapshot(root)
     work = Path(tempfile.mkdtemp(prefix="agent-readiness-evals-"))
-    tasks = []
+    tasks, began, spent_s, measured, stopped = [], time.time(), 0.0, 0, None
+    planned = min(len(cands), a.max_tasks * 3)
     try:
         copy = work / root.name
         bench.make_copy(root, "HEAD", copy, None)
         hidden = bench.sensitive_files(root, copy)
-        for c in cands[: a.max_tasks * 3]:
+        for c in cands[:planned]:
             if len([t for t in tasks if t["validation"]["valid"]]) >= a.max_tasks:
                 break
-            v = validate(root, c, copy, a.test_cmd, python, hidden)
+            if c["merge"] in previous:
+                v, note = previous[c["merge"]], " (reused)"
+            else:
+                if a.max_minutes and time.time() - began > a.max_minutes * 60:
+                    stopped = f"stopped at --max-minutes {a.max_minutes:g}"
+                    break
+                v, note = validate(root, c, copy, a.test_cmd, python, hidden, a.repeat, a.max_test_seconds), ""
+                spent_s += v["seconds"]
+                measured += 1
             c["validation"] = v
             tasks.append(c)
             print(f"- {c['id']} ({c['date']}, {len(c['code_files'])} code + {len(c['test_files'])} test files): "
-                  f"{'VALID' if v['valid'] else 'skip'}: {v['reason']}" + (f"; tests need {', '.join(v['needs_files'])}" if v["needs_files"] else ""))
+                  f"{'VALID' if v['valid'] else 'skip'}{note}: {v['reason']}"
+                  + (f"; tests need {', '.join(v['needs_files'])}" if v["needs_files"] else ""), flush=True)
+            if measured == 1:
+                left = planned - len(tasks)
+                print(f"  first PR took {v['seconds']:.0f} s of test runs; worst case for the remaining {left}: "
+                      f"~{v['seconds'] * left / 60:.0f} min (early stops and reuse make it less)", flush=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if stopped:
+        print(stopped, file=sys.stderr)
     if bench.snapshot(root) != start:
         print("**repo changed during build: inspect git status**", file=sys.stderr)
         return 3
     doc = {"repo": root.name, "branch": a.branch, "test_cmd": a.test_cmd, "python": python,
-           "built": time.strftime("%Y-%m-%d"), "tasks": tasks}
+           "built": time.strftime("%Y-%m-%d"), "test_minutes": round(spent_s / 60, 1), "tasks": tasks}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(doc, indent=2))
     n = len([t for t in tasks if t["validation"]["valid"]])
@@ -302,12 +358,14 @@ def run_report(repo, doc, tasks, results, spent, stopped, changed, a) -> str:
         pb, pa = sum(r["passed"] for r in b), sum(r["passed"] for r in af)
         tb, ta = tb + pb, ta + pa
         m = lambda rs, k: bench.med([r[k] for r in rs])
-        L.append(f"| {t['id']}: {t['title'][:50]} | {pb}/{len(b)} | {pa}/{len(af)} | ${m(b, 'cost'):.2f} → ${m(af, 'cost'):.2f} | "
+        mark = " †" if not t["validation"].get("flakiness_checked", True) else ""
+        L.append(f"| {t['id']}{mark}: {t['title'][:50]} | {pb}/{len(b)} | {pa}/{len(af)} | ${m(b, 'cost'):.2f} → ${m(af, 'cost'):.2f} | "
                  f"{m(b, 'turns'):.0f} → {m(af, 'turns'):.0f} | {m(b, 'same_files_as_pr'):.0%} → {m(af, 'same_files_as_pr'):.0%} |")
     nb = len([r for r in results if r["side"] == "before"])
     na = len([r for r in results if r["side"] == "after"])
     L += ["", f"**Pass rate:** before {tb}/{nb}, after {ta}/{na}.", "",
           "## Caveats", "",
+          "- † = flakiness unchecked: its tests were too slow to repeat during build, so a pass or fail may be noise.",
           "- Few tasks and runs: one task flipping changes the rate a lot. Treat it as a smoke test, not a score.",
           "- The PR's commit messages are the spec; real tickets may say more or less.",
           "- Grading runs the agent's code in the temp copy with a minimal environment; network is not blocked.", ""]
@@ -324,6 +382,12 @@ def main() -> int:
     b.add_argument("--branch", default="HEAD")
     b.add_argument("--scan", type=int, default=200, help="how many recent merges to look at")
     b.add_argument("--max-tasks", type=int, default=6)
+    b.add_argument("--repeat", type=int, default=3,
+                   help="run each side's tests this many times; mixed results mark the PR flaky (default 3)")
+    b.add_argument("--max-test-seconds", type=float, default=120,
+                   help="if one test run takes longer, don't repeat it; the PR is kept, marked 'flakiness unchecked'")
+    b.add_argument("--max-minutes", type=float, default=0, help="stop validating new PRs after this long (0 = no limit)")
+    b.add_argument("--revalidate", action="store_true", help="ignore results from an earlier build")
     b.add_argument("--out", default=DEFAULT_TASKS)
     r = sub.add_parser("run")
     r.add_argument("root", nargs="?", default=".")

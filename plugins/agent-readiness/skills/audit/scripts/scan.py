@@ -39,6 +39,7 @@ BUDGET_FILE_WARN = 200
 BUDGET_RULE = 40
 BUDGET_ALWAYS_LOADED = 150
 BUDGET_DESCRIPTION_CHARS = 300
+BUDGET_UNIT = 15  # an app's own CLAUDE.md/AGENTS.md: only what differs from the area rule
 
 # Instruction files used by other AI tools (candidates to merge/reuse).
 OTHER_TOOL_FILES = [
@@ -53,7 +54,8 @@ MANIFESTS = {
     "requirements.txt": "python", "pyproject.toml": "python", "Pipfile": "python",
     "setup.py": "python", "manage.py": "django", "go.mod": "go", "Cargo.toml": "rust",
     "pom.xml": "java", "build.gradle": "java", "build.gradle.kts": "kotlin",
-    "Gemfile": "ruby", "composer.json": "php", "pubspec.yaml": "flutter",
+    "Gemfile": "ruby", "composer.json": "php", "pubspec.yaml": "flutter", "Package.swift": "swift",
+    "mix.exs": "elixir", "deno.json": "deno",
     "Dockerfile": "docker", "docker-compose.yml": "docker", "docker-compose.yaml": "docker",
     "compose.yml": "docker", "compose.yaml": "docker", "Makefile": "make",
     "tsconfig.json": "typescript", "angular.json": "angular", "vite.config.ts": "vite",
@@ -78,6 +80,11 @@ HYGIENE = {
                            "renovate.json5", ".github/renovate.json", ".renovaterc", ".renovaterc.json"],
     "secret_scanning": [".gitleaks.toml", ".secrets.baseline", ".trufflehog.yml", ".github/secret_scanning.yml"],
     "dev_environment": [".devcontainer", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"],
+    "license": ["LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"],
+    "contributing": ["CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md"],
+    "security_policy": ["SECURITY.md", ".github/SECURITY.md"],
+    "editorconfig": [".editorconfig"],
+    "architecture_docs": ["ARCHITECTURE.md", "docs/architecture.md", "docs/architecture", "docs/adr", "docs/adrs", "adr"],
 }
 SEV_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
@@ -122,6 +129,101 @@ NPM_BUILTINS = {"install", "add", "remove", "test", "start", "build", "dev", "i"
                 "link", "global", "config", "cache", "audit", "outdated", "list", "ls"}
 # Only `make` that starts a command, so prose in a fence ("make a copy") is ignored.
 MAKE_RE = re.compile(r"(?:^|&&|\|\||[;|$])\s*make\s+([\w.-]+)")
+
+
+# ---- Environment facts per part (scorecard E): can an agent set up, run and check its work? ----
+ENV_FILES = {
+    "lockfile": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "poetry.lock",
+                 "Pipfile.lock", "uv.lock", "pdm.lock", "Cargo.lock", "go.sum", "Gemfile.lock", "composer.lock",
+                 "pubspec.lock", "mix.lock", "packages.lock.json"],
+    "runtime_pinned": [".nvmrc", ".node-version", ".python-version", ".tool-versions", "runtime.txt", ".ruby-version",
+                       "rust-toolchain", "rust-toolchain.toml", ".java-version", "global.json", ".sdkmanrc", ".mise.toml"],
+    "setup": [".devcontainer", "bin/setup", "script/setup", "script/bootstrap", "scripts/setup.sh", "scripts/bootstrap.sh",
+              "setup.sh", "bootstrap.sh", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"],
+    "linter": [".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json", ".eslintrc.yml", "eslint.config.js",
+               "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "biome.json", "biome.jsonc", "pylintrc",
+               ".pylintrc", ".flake8", "ruff.toml", ".ruff.toml", ".golangci.yml", ".golangci.yaml", ".rubocop.yml",
+               "phpcs.xml", ".swiftlint.yml", "clippy.toml", "detekt.yml", ".oxlintrc.json"],
+    "formatter": [".prettierrc", ".prettierrc.js", ".prettierrc.json", ".prettierrc.yml", ".prettierrc.yaml",
+                  "prettier.config.js", "prettier.config.mjs", ".isort.cfg", ".style.yapf", "rustfmt.toml",
+                  ".rustfmt.toml", ".swiftformat", ".clang-format", "biome.json", "biome.jsonc", ".php-cs-fixer.php"],
+    "type_checker": ["tsconfig.json", "mypy.ini", ".mypy.ini", "pyrightconfig.json", ".flowconfig"],
+    "coverage": [".coveragerc", ".nycrc", ".nycrc.json", "codecov.yml", ".codecov.yml", "jest.config.js",
+                 "vitest.config.ts", "vitest.config.js"],
+}
+# Config keys inside shared files that count too (pyproject sections, package.json fields, setup.cfg sections).
+ENV_KEYS = {
+    "pyproject.toml": {"linter": r"^\[tool\.(ruff|pylint|flake8)", "formatter": r"^\[tool\.(black|isort|ruff\.format)",
+                       "type_checker": r"^\[tool\.(mypy|pyright)", "coverage": r"^\[tool\.coverage",
+                       "runtime_pinned": r"^requires-python\s*="},
+    "setup.cfg": {"linter": r"^\[(flake8|pylint)", "type_checker": r"^\[mypy", "coverage": r"^\[coverage:"},
+    "tox.ini": {"linter": r"^\[flake8", "coverage": r"--cov"},
+    "package.json": {"linter": r'"eslintConfig"\s*:', "formatter": r'"prettier"\s*:', "coverage": r'"(collectCoverage|coverageThreshold)"',
+                     "runtime_pinned": r'"engines"\s*:'},
+    "go.mod": {"runtime_pinned": r"^go\s+\d"},
+}
+SETUP_TARGET = re.compile(r"^(setup|bootstrap|install|init|requirements|deps)\s*:", re.M)
+# What CI steps do. Covers runners (tox, nox, make, manage.py) that tool-name lists miss.
+CI_STEPS = {
+    "tests": r"\b(pytest|tox|nox|manage\.py\s+test|python -m (pytest|unittest)|jest|vitest|mocha|karma|go\s+test|cargo\s+test|"
+             r"(npm|yarn|pnpm|bun)\s+(run\s+)?test|make\s+test|rspec|rake\s+test|phpunit|mvnw?\s+(test|verify)|"
+             r"gradlew?\s+(test|check)|dotnet\s+test|swift\s+test|mix\s+test|cypress\s+run|playwright\s+test)\b",
+    "lint": r"\b(eslint|biome|oxlint|pylint|flake8|ruff|black\s+--check|isort\s+--check|prettier\s+--check|mypy|pyright|"
+            r"tsc\s+--noEmit|golangci-lint|rubocop|phpcs|swiftlint|(npm|yarn|pnpm)\s+(run\s+)?(lint|typecheck))\b",
+    "build": r"\b((npm|yarn|pnpm|bun)\s+(run\s+)?build|docker\s+(build|buildx)|docker/build-push-action|make\s+build|"
+             r"go\s+build|cargo\s+build|mvnw?\s+package|gradlew?\s+build|dotnet\s+build)\b",
+    "deploy": r"\b(deploy|codedeploy|kubectl\s+apply|helm\s+(upgrade|install)|terraform\s+apply|serverless\s+deploy|"
+              r"fly\s+deploy|vercel|netlify|gcloud\s+run|aws\s+ecs)\b",
+    "security": r"\b(codeql|snyk|trivy|semgrep|gitleaks|trufflehog|bandit|npm\s+audit|pip-audit|safety\s+check|osv-scanner|"
+                r"dependency-review)\b",
+}
+
+
+def ci_steps(root: Path, ci_files: list[str], parts: list[str]) -> list[dict]:
+    """Per CI file: which kinds of steps it runs, and which app parts they run in."""
+    out = []
+    named = [p for p in parts if p != "."]
+    for f in ci_files:
+        text = read_text(root / f)
+        kinds = sorted(k for k, rx in CI_STEPS.items() if re.search(rx, text, re.I | re.M))
+        # A part is targeted if the workflow runs in it (working-directory, cd, --prefix, -C) or only on its paths.
+        hit = [p for p in named if re.search(rf"(working-directory:\s*['\"]?\.?/?{re.escape(p)}\b|\bcd\s+\.?/?{re.escape(p)}\b|"
+                                             rf"--prefix[= ]\.?/?{re.escape(p)}\b|-C\s+\.?/?{re.escape(p)}\b)", text)]
+        ignored = [p for p in named if re.search(rf"paths-ignore:[^\n]*\n(\s+-[^\n]*\n)*?\s+-\s*['\"]?{re.escape(p)}/", text)]
+        targets = hit or (["."] if ignored or not named else ["."])
+        out.append({"file": f, "steps": kinds, "parts": targets})
+    return out
+
+
+def env_facts(root: Path, relpaths: dict, parts: list[str], ci: list[dict], make_targets: set) -> list[dict]:
+    out = []
+    for part in parts or ["."]:
+        base = root if part == "." else root / part
+        facts = {}
+        for kind, names in ENV_FILES.items():
+            facts[kind] = [n for n in names if (base / n).exists()]
+        for fname, keys in ENV_KEYS.items():
+            text = read_text(base / fname)
+            for kind, rx in keys.items():
+                if text and re.search(rx, text, re.M) and fname not in facts[kind]:
+                    facts[kind].append(f"{fname} ({kind.replace('_', ' ')})")
+        # Pinned requirements count as a lockfile for pip (e.g. pip-compile output).
+        reqs = [f for f in ["requirements.txt"] + sorted(str(p.relative_to(base)) for p in base.glob("requirements/*.txt"))
+                if (base / f).is_file()]
+        if not facts["lockfile"] and any(re.search(r"^[\w.-]+==", read_text(base / f), re.M) for f in reqs):
+            facts["lockfile"].append(next(f for f in reqs if re.search(r"^[\w.-]+==", read_text(base / f), re.M)) + " (pinned)")
+        if part == "." and SETUP_TARGET.search("\n".join(f"{t}:" for t in make_targets)):
+            facts["setup"].append("Makefile target")
+        mine = [c for c in ci if part in c["parts"]]
+        facts["ci_tests"] = [c["file"] for c in mine if "tests" in c["steps"]]
+        facts["ci_lint"] = [c["file"] for c in mine if "lint" in c["steps"]]
+        has_tests = any(scan_part(rp, part) and TEST_PART.search(rp) for rp in relpaths)
+        out.append({"part": part, "has_tests": has_tests, **facts})
+    return out
+
+
+def scan_part(rp: str, part: str) -> bool:
+    return part == "." or rp.startswith(part + "/")
 
 
 def rel(p: Path, root: Path) -> str:
@@ -587,7 +689,8 @@ def scan(root: Path, layout: str = "auto") -> dict:
                 dirs_with_manifests.add(str(Path(rp).parent))
     ci = sorted({rp for rp in relpaths for g in CI_GLOBS if fnmatch.fnmatch(rp, g)})
     app_roots = sorted(dirs_with_manifests)
-    is_monorepo = len([d for d in app_roots if d != "."]) >= 2 or any(
+    workspaces = '"workspaces"' in read_text(root / "package.json")
+    is_monorepo = len([d for d in app_roots if d != "."]) >= 2 or workspaces or any(
         m["kind"] == "node-monorepo" for m in manifests)
 
     npm_scripts: dict[str, set] = {}
@@ -861,6 +964,15 @@ def scan(root: Path, layout: str = "auto") -> dict:
         if x["model_invocable"] and x["description_chars"] == 0:
             add("medium", "no description; Claude can't tell when to use it", x["path"])
     hygiene = {k: [p for p in v if (root / p).exists()] for k, v in HYGIENE.items()}
+    active_parts = [p for p in app_roots if not any(x["root"] == p and x["dormant"] for x in parts)]
+    ci_detail = ci_steps(root, ci, active_parts)
+    environment = env_facts(root, relpaths, active_parts, ci_detail, make_targets)
+    for e in environment:
+        label = "repo root" if e["part"] == "." else f"`{e['part']}/`"
+        if e["has_tests"] and ci and not e["ci_tests"]:
+            add("medium", f"{label} has tests but no CI step runs them (agents' changes there aren't checked by CI)")
+        if not e["runtime_pinned"] and e["part"] != ".":
+            add("low", f"{label}: no runtime version pinned (.nvmrc, .python-version, engines, ...): agents and CI may use different versions")
 
     for d in duplicates[:20]:
         add("medium", f"same instruction appears in {len(d['files'])} files: \"{d['line'][:80]}\"", ", ".join(d["files"]))
@@ -961,9 +1073,73 @@ def scan(root: Path, layout: str = "auto") -> dict:
         "secrets": {"secret_like_files": secret_files, "gitignored": ignored, "tracked": tracked_secrets,
                     "env_examples": env_examples},
         "hygiene": hygiene,
+        "environment": environment,
+        "ci_steps": ci_detail,
         "checks": {"duplicates": duplicates, "stale_paths": stale_paths, "stale_commands": stale_cmds},
         "findings": findings,
     }
+
+
+def covering(r: dict, root: Path, targets: list[str]) -> list[dict]:
+    """For each file, the instruction files Claude loads when working on it, and where to edit them."""
+    out = []
+    for t in targets:
+        t = Path(t).resolve().relative_to(root).as_posix() if os.path.isabs(t) else t.strip("./") or t
+        hits = []
+
+        def add(path, loads, lines, budget, kind):
+            f = root / path
+            edit_at = rel(f.resolve(), root) if f.is_symlink() else path
+            hits.append({"file": path, "edit_at": edit_at, "loads": loads, "lines": lines, "budget": budget,
+                         "room": budget - lines, "kind": kind})
+
+        for c in r["claude"]["claude_md"]:
+            d = str(Path(c["path"]).parent)
+            body = [l for l in strip_html_comments(read_text(root / c["path"])).splitlines() if l.strip()]
+            if body and all(re.fullmatch(r"\s*@\S+\s*", l) for l in body):
+                continue  # a shim that only imports another file: edit the imported file instead
+            if c["loads"] == "always":
+                add(c["path"], "every session", c["lines"], BUDGET_ROOT_CLAUDE, "root")
+            elif t.startswith(d + "/"):
+                add(c["path"], f"when working in `{d}/`", c["lines"], BUDGET_UNIT, "nested")
+        for a in r["agents_md"]:
+            d = str(Path(a["path"]).parent)
+            if a["loads"].startswith("never"):
+                continue
+            if a["at_root"]:
+                add(a["path"], "every session", a["lines"], BUDGET_ROOT_CLAUDE, "root")
+            elif t.startswith(d + "/"):
+                add(a["path"], f"when working in `{d}/`", a["lines"], BUDGET_UNIT, "nested")
+        for i in r["claude"]["imports"]:
+            if i["exists"] and not any(h["file"] == i["resolved"] for h in hits):
+                add(i["resolved"], f"every session (imported by `{i['from']}`)", i["lines"], BUDGET_ROOT_CLAUDE, "root")
+        for x in r["claude"]["rules"]:
+            if x["loads"] == "always":
+                add(x["path"], "every session (no `paths:`)", x["lines"], BUDGET_RULE, "rule")
+            elif x["paths"] and any(glob_match(t, g) for g in x["paths"]):
+                add(x["path"], "when matching files are touched: " + ", ".join(x["paths"]), x["lines"], BUDGET_RULE, "rule")
+        # Edit the most specific file first: nested, then scoped rule, then root.
+        order = {"nested": 0, "rule": 1, "root": 2}
+        hits.sort(key=lambda h: (order[h["kind"]], -len(h["file"])))
+        out.append({"target": t, "exists": (root / t).exists(), "covered_by": hits,
+                    "scoped": any(h["kind"] != "root" for h in hits)})
+    return out
+
+
+def covering_md(cov: list[dict]) -> str:
+    L = []
+    for c in cov:
+        L += [f"## `{c['target']}`" + ("" if c["exists"] else " (no such file)"), ""]
+        if not c["scoped"]:
+            L += ["No scoped rule or app file covers this path: a new path-scoped rule is the right home "
+                  "(or the root file, if it truly applies everywhere).", ""]
+        if c["covered_by"]:
+            L += ["| Instruction file | Edit at | Loads | Lines / budget |", "|---|---|---|---|"]
+            for h in c["covered_by"]:
+                over = " **full: consolidate before adding**" if h["room"] <= 0 else ""
+                L.append(f"| `{h['file']}` | `{h['edit_at']}` | {h['loads']} | {h['lines']} / {h['budget']}{over} |")
+            L.append("")
+    return "\n".join(L)
 
 
 def to_md(r: dict) -> str:
@@ -1026,6 +1202,16 @@ def to_md(r: dict) -> str:
                   ", ".join(f"`{u['unit']}/` ({u['reasons'][0]})" for u in weak[:UNIT_TOP])]
     if r["sessions"]:
         L += ["", "Sessions started here: " + ", ".join(f"`{k}` {v}" for k, v in sorted(r["sessions"].items()))]
+    if r.get("environment"):
+        yes = lambda v: "✓" if v else "-"
+        L += ["", "## Environment per part (scorecard E)", "",
+              "| Part | Lockfile | Runtime pinned | Setup | Linter | Formatter | Type checker | Coverage | CI tests | CI lint |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
+        for e in r["environment"]:
+            L.append(f"| `{e['part']}` | " + " | ".join(yes(e[k]) for k in ("lockfile", "runtime_pinned", "setup", "linter",
+                     "formatter", "type_checker", "coverage", "ci_tests", "ci_lint")) + " |")
+        L += [""] + [f"- `{c['file']}`: {', '.join(c['steps']) or 'no recognised steps'} (in {', '.join(f'`{p}`' for p in c['parts'])})"
+                     for c in r.get("ci_steps", [])]
     L += ["", "## Repo files (scorecard H4-H6, E1)", ""] + \
          [f"- {k}: {', '.join(v) or 'none found'}" for k, v in r["hygiene"].items()]
     return "\n".join(L) + "\n"
@@ -1038,6 +1224,8 @@ def main() -> int:
     ap.add_argument("--layout", choices=["auto", "nested", "rules"], default="auto",
                     help="where units' own instructions go: auto (by signals), nested CLAUDE.md/AGENTS.md, or path-scoped rules")
     ap.add_argument("--map", action="store_true", help="print the generated structure map (markdown) instead of the report")
+    ap.add_argument("--covering", nargs="+", metavar="PATH",
+                    help="list the instruction files that load for these files (for /agent-readiness:learn)")
     ap.add_argument("--fail-on", choices=["high", "medium", "low"],
                     help="exit 1 if any finding is at or above this severity (for CI)")
     a = ap.parse_args()
@@ -1046,6 +1234,10 @@ def main() -> int:
         print(f"not a directory: {root}", file=sys.stderr)
         return 2
     result = scan(root, a.layout)
+    if a.covering:
+        cov = covering(result, root.resolve(), a.covering)
+        print(json.dumps(cov, indent=2) if a.format == "json" else covering_md(cov))
+        return 0
     if a.map:
         print(structure_map(result))
         return 0

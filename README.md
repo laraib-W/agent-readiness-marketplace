@@ -14,7 +14,7 @@ Its output is specific to each repo: every proposed instruction must cite eviden
 | `instruction-auditor` | Subagent (read-only by instruction; Bash for `git log`) | Checks existing instruction files against the code: stale, wrong, duplicated, misplaced |
 | `evals.py` | Script (stdlib Python) | Eval harness: mines merged PRs with tests, validates them for free (tests fail before, pass after), then has an agent redo each one in a sandbox with and without the instructions, graded by the PR's hidden tests |
 | `bench.py` | Script (stdlib Python) | Before/after benchmark with real headless Claude runs: cost, turns, tokens, key facts mentioned, and canary probes that check the guardrails actually block secret reads. Plans first, spends only with `--yes` |
-| `scan.py` | Script (stdlib Python) | Deterministic facts: instruction files and when they load, always-loaded size, broken imports/globs, stale commands/paths, duplicates, secret-file protection, and which subfolders (apps, features, packages) stand out from their siblings enough to need their own rule or `CLAUDE.md` |
+| `scan.py` | Script (stdlib Python) | Deterministic facts: instruction files and when they load, always-loaded size, broken imports/globs, stale commands/paths, duplicates, secret-file protection, per-part environment facts (lockfile, pinned runtime, setup, lint/format/type configs, and which CI steps run tests and lint for which part), and which subfolders (apps, features, packages) stand out from their siblings enough to need their own rule or `CLAUDE.md` |
 
 It complements the built-in `/doctor prompt-audit`, which reviews instruction wording. This plugin adds the deterministic scan, scoring, file layout and guardrails.
 

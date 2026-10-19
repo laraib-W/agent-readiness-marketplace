@@ -22,6 +22,9 @@ FILES = {
     "data.dump": "",  # not ignored, not tracked
     "e2e/cy.env": "K=v\n",
     "web/package.json": "{}",
+    "web/src/a.test.js": "",
+    ".github/workflows/back.yml": "jobs:\n  t:\n    steps:\n      - run: tox -e py310\n",
+    ".github/workflows/web.yml": "defaults:\n  run:\n    working-directory: ./web\njobs:\n  b:\n    steps:\n      - run: npm run build\n",
     "web/src/a.js": "",
     "old/package.json": "{}",
     "README.md": "```bash\nmake quality\nyou have to make a copy\n```\n",
@@ -42,7 +45,7 @@ FILES = {
 }
 
 
-def run_scan() -> dict:
+def run_scan(covering: list[str] | None = None):
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         for p, body in FILES.items():
@@ -53,7 +56,15 @@ def run_scan() -> dict:
         old = {"GIT_AUTHOR_DATE": "2019-01-01T00:00:00", "GIT_COMMITTER_DATE": "2019-01-01T00:00:00"}
         subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "old", "--", "old"],
                        cwd=root, check=True, env={**os.environ, **old})
-        return scan.scan(root)
+        r = scan.scan(root)
+        return scan.covering(r, root.resolve(), covering) if covering else r
+
+
+def test_covering():
+    by = {c["target"]: [h["file"] for h in c["covered_by"]] for c in run_scan(["src/a.tsx", "svc/b/x.py", "svc/a/x.py"])}
+    assert ".claude/rules/braces.md" in by["src/a.tsx"] and "CLAUDE.md" in by["src/a.tsx"], by
+    assert "svc/b/AGENTS.md" in by["svc/b/x.py"] and "svc/b/CLAUDE.md" not in by["svc/b/x.py"], by  # shim folds away
+    assert "svc/a/AGENTS.md" not in by["svc/a/x.py"], by  # Claude never loads it, so never edit it
 
 
 def test_scan():
@@ -96,6 +107,13 @@ def test_scan():
     assert parts["old"]["dormant"] and not parts["web"]["dormant"]
     assert any(f["finding"].startswith("`web/`") and "no area instructions" in f["finding"] for f in r["findings"])
     assert not any(f["finding"].startswith("`old/`") and "no area instructions" in f["finding"] for f in r["findings"])
+    ci = {c["file"]: c for c in r["ci_steps"]}
+    assert ci[".github/workflows/back.yml"]["steps"] == ["tests"] and ci[".github/workflows/back.yml"]["parts"] == ["."]
+    assert ci[".github/workflows/web.yml"]["steps"] == ["build"] and ci[".github/workflows/web.yml"]["parts"] == ["web"]
+    env = {e["part"]: e for e in r["environment"]}
+    assert env["."]["ci_tests"] == [".github/workflows/back.yml"] and env["web"]["has_tests"] and not env["web"]["ci_tests"]
+    assert "old" not in env  # dormant parts are skipped
+    assert any(f["finding"].startswith("`web/` has tests but no CI step runs them") for f in r["findings"])
     untracked = next(f["finding"] for f in r["findings"] if "not committed" in f["finding"])
     listed = untracked.split(": ", 1)[1].split(" (+")[0].split(", ")
     assert ".claude/rules/braces.md" in listed and "CLAUDE.md" not in listed, listed
@@ -146,5 +164,6 @@ def test_units():
 
 if __name__ == "__main__":
     test_scan()
+    test_covering()
     test_units()
     print("ok")

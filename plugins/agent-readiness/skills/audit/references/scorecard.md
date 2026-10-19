@@ -45,7 +45,7 @@ Score each criterion **0 (missing) / 1 (partial) / 2 (good)** with evidence (fil
 | H5 | Review routing | PR template, CODEOWNERS |
 | H6 | Security automation | Dependency updates and secret scanning enabled |
 
-H4–H6 and E1's Compose/devcontainer part start from the scan's **Repo files** section. GitHub secret scanning is a repo setting, not a file: if no file shows it, mark that part `UNVERIFIED` rather than 0.
+E1 and E5–E7 start from the scan's **Environment per part** table: lockfile, pinned runtime and setup command (E1), linter and formatter (E5), type checker (E6), and which CI workflow runs tests and lint for each part (E7). The table shows what's configured; still run the commands before scoring 2. H2–H6 start from the **Repo files** section (license, contributing guide, security policy, editorconfig, architecture docs, pre-commit, CODEOWNERS, PR template, dependency updates, secret scanning). GitHub secret scanning is a repo setting, not a file: if no file shows it, mark that part `UNVERIFIED` rather than 0.
 
 ## Maturity level
 
